@@ -124,5 +124,18 @@ class VideoProcessor(VideoProcessorBase):
 
 webrtc_streamer(
     key="michi-detector",
-    video_processor_factory=VideoProcessor
+    video_processor_factory=VideoProcessor,
+
+    rtc_configuration={
+        "iceServers": [
+            {
+                "urls": ["stun:stun.l.google.com:19302"]
+            }
+        ]
+    },
+
+    media_stream_constraints={
+        "video": True,
+        "audio": False
+    }
 )
