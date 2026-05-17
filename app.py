@@ -3,6 +3,9 @@ import time
 import streamlit as st
 import json
 import platform
+import cv2
+import numpy as np
+from keras.models import load_model
 
 # Muestra la versión de Python junto con detalles adicionales
 st.write("Versión de Python:", platform.python_version())
