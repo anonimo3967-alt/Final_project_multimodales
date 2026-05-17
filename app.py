@@ -11,6 +11,18 @@ from keras.models import load_model
 # Muestra la versión de Python junto con detalles adicionales
 st.write("Versión de Python:", platform.python_version())
 
+st.title("Webcam Live Feed")
+run = st.checkbox('Run')
+FRAME_WINDOW = st.image([])
+camera = cv2.VideoCapture(0)
+
+while run:
+    _, frame = camera.read()
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    FRAME_WINDOW.image(frame)
+else:
+    st.write('Stopped')
+
 model = load_model('keras_model.h5')
 data = np.ndarray(shape=(1, 224, 224, 3), dtype=np.float32)
 
