@@ -1,2 +1,8 @@
 streamlit
 paho-mqtt== 1.6.1
+keras
+streamlit-webrtc
+numpy
+opencv-python-headless
+Pillow
+tensorflow==2.12
