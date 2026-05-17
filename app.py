@@ -6,18 +6,11 @@ import platform
 import cv2
 import numpy as np
 from keras.models import load_model
-from camera_input_live import camera_input_live
+
 
 
 # Muestra la versión de Python junto con detalles adicionales
 st.write("Versión de Python:", platform.python_version())
-
-image = camera_input_live()
-
-if image is not None:
-    st.image(image)
-    bytes_data = image.getvalue()
-    cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
 model = load_model('keras_model.h5')
 data = np.ndarray(shape=(1, 224, 224, 3), dtype=np.float32)
