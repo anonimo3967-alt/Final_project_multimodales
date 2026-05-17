@@ -1,80 +1,128 @@
-import paho.mqtt.client as paho
-import time
 import streamlit as st
-import json
-import platform
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+import av
 import cv2
 import numpy as np
-from keras.models import load_model
+from tensorflow.keras.models import load_model
+import paho.mqtt.client as mqtt
 
+# =========================
+# MQTT
+# =========================
 
-# Muestra la versión de Python junto con detalles adicionales
-st.write("Versión de Python:", platform.python_version())
+MQTT_BROKER = "157.230.214.127"
+MQTT_TOPIC = "cmqtt_sdesi"
 
-model = load_model('keras_model.h5')
-data = np.ndarray(shape=(1, 224, 224, 3), dtype=np.float32)
+client = mqtt.Client()
+client.connect(MQTT_BROKER, 1883, 60)
 
-values = 0.0
-act1="OFF"
+# =========================
+# CARGAR MODELO
+# =========================
 
-def on_publish(client,userdata,result):             #create function for callback
-    print("el dato ha sido publicado \n")
-    pass
+model = load_model("keras_model.h5", compile=False)
 
-def on_message(client, userdata, message):
-    global message_received
-    time.sleep(2)
-    message_received=str(message.payload.decode("utf-8"))
-    st.write(message_received)
+class_names = open("labels.txt", "r").readlines()
 
-        
+# =========================
+# STREAMLIT
+# =========================
 
+st.title("🐱 Detector Inteligente de Michis")
 
-broker="157.230.214.127"
-port=1883
-client1= paho.Client("otrocliente1029839")
-client1.on_message = on_message
+# =========================
+# PROCESADOR DE VIDEO
+# =========================
 
+class VideoProcessor(VideoProcessorBase):
 
+    def recv(self, frame):
 
-st.title("MQTT Control")
+        img = frame.to_ndarray(format="bgr24")
 
-if st.button('ON'):
-    act1="ON"
-    client1= paho.Client("otrocliente1029839")                           
-    client1.on_publish = on_publish                          
-    client1.connect(broker,port)  
-    message =json.dumps({"Act1":act1})
-    ret= client1.publish("cmqtt_sdesi", message)
- 
-    #client1.subscribe("Sensores")
-    
-    
-else:
-    st.write('')
+        # =========================
+        # PREPROCESAMIENTO
+        # =========================
 
-if st.button('OFF'):
-    act1="OFF"
-    client1= paho.Client("otrocliente1029839")                           
-    client1.on_publish = on_publish                          
-    client1.connect(broker,port)  
-    message =json.dumps({"Act1":act1})
-    ret= client1.publish("cmqtt_sdesi", message)
-  
-    
-else:
-    st.write('')
+        image = cv2.resize(img, (224, 224))
 
-values = st.slider('Selecciona el rango de valores',0.0, 100.0)
-st.write('Values:', values)
+        image_array = np.asarray(image)
 
-if st.button('Enviar valor analógico'):
-    client1= paho.Client("otrocliente1029839")                           
-    client1.on_publish = on_publish                          
-    client1.connect(broker,port)   
-    message =json.dumps({"Analog": float(values)})
-    ret= client1.publish("cmqtt_adeanalogo", message)
-    
- 
-else:
-    st.write('')
+        normalized_image_array = (
+            image_array.astype(np.float32) / 127.5
+        ) - 1
+
+        data = np.ndarray(
+            shape=(1, 224, 224, 3),
+            dtype=np.float32
+        )
+
+        data[0] = normalized_image_array
+
+        # =========================
+        # PREDICCIÓN
+        # =========================
+
+        prediction = model.predict(data, verbose=0)
+
+        index = np.argmax(prediction)
+
+        class_name = class_names[index]
+
+        confidence_score = prediction[0][index]
+
+        class_name = class_name[2:].strip()
+
+        # =========================
+        # TEXTO EN PANTALLA
+        # =========================
+
+        if class_name == "Michi_correcto":
+
+            text = f"MICHI CORRECTO ({confidence_score:.2f})"
+
+            color = (0, 255, 0)
+
+            client.publish(
+                MQTT_TOPIC,
+                '{"Act1":"ON"}'
+            )
+
+        else:
+
+            text = f"INTRUSO ({confidence_score:.2f})"
+
+            color = (0, 0, 255)
+
+            client.publish(
+                MQTT_TOPIC,
+                '{"Act1":"OFF"}'
+            )
+
+        # =========================
+        # DIBUJAR TEXTO
+        # =========================
+
+        cv2.putText(
+            img,
+            text,
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            color,
+            2
+        )
+
+        return av.VideoFrame.from_ndarray(
+            img,
+            format="bgr24"
+        )
+
+# =========================
+# INICIAR WEBCAM
+# =========================
+
+webrtc_streamer(
+    key="michi-detector",
+    video_processor_factory=VideoProcessor
+)
