@@ -1,81 +1,33 @@
-import paho.mqtt.client as paho
-import time
 import streamlit as st
-import json
-import platform
+from streamlit_webrtc import webrtc_streamer, VideoHTMLAttributes
 import cv2
-import numpy as np
-from keras.models import load_model
+import av
 
+st.title("IA de Reconocimiento de Imágenes en Vivo 🚀")
 
+# Esta función procesará cada frame del video en tiempo real
+def video_frame_callback(frame):
+    # Convertir el frame de WebRTC a un array de NumPy (formato BGR para OpenCV)
+    img = frame.to_ndarray(format="bgr24")
 
-# Muestra la versión de Python junto con detalles adicionales
-st.write("Versión de Python:", platform.python_version())
+    # ---------------------------------------------------------
+    # ¡AQUÍ VA TU MODELO DE IA!
+    # Ejemplo con OpenCV: Convertir a escala de grises (reemplázalo por tu IA)
+    gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    output_img = cv2.cvtColor(gray_img, cv2.COLOR_GRAY2BGR)
+    # ---------------------------------------------------------
 
-model = load_model('keras_model.h5')
-data = np.ndarray(shape=(1, 224, 224, 3), dtype=np.float32)
+    # Retornar el frame procesado para que el usuario lo vea en su pantalla
+    return av.VideoFrame.from_ndarray(output_img, format="bgr24")
 
-values = 0.0
-act1="OFF"
-
-def on_publish(client,userdata,result):             #create function for callback
-    print("el dato ha sido publicado \n")
-    pass
-
-def on_message(client, userdata, message):
-    global message_received
-    time.sleep(2)
-    message_received=str(message.payload.decode("utf-8"))
-    st.write(message_received)
-
-        
-
-
-broker="157.230.214.127"
-port=1883
-client1= paho.Client("otrocliente1029839")
-client1.on_message = on_message
-
-
-
-st.title("MQTT Control")
-
-if st.button('ON'):
-    act1="ON"
-    client1= paho.Client("otrocliente1029839")                           
-    client1.on_publish = on_publish                          
-    client1.connect(broker,port)  
-    message =json.dumps({"Act1":act1})
-    ret= client1.publish("cmqtt_sdesi", message)
- 
-    #client1.subscribe("Sensores")
-    
-    
-else:
-    st.write('')
-
-if st.button('OFF'):
-    act1="OFF"
-    client1= paho.Client("otrocliente1029839")                           
-    client1.on_publish = on_publish                          
-    client1.connect(broker,port)  
-    message =json.dumps({"Act1":act1})
-    ret= client1.publish("cmqtt_sdesi", message)
-  
-    
-else:
-    st.write('')
-
-values = st.slider('Selecciona el rango de valores',0.0, 100.0)
-st.write('Values:', values)
-
-if st.button('Enviar valor analógico'):
-    client1= paho.Client("otrocliente1029839")                           
-    client1.on_publish = on_publish                          
-    client1.connect(broker,port)   
-    message =json.dumps({"Analog": float(values)})
-    ret= client1.publish("cmqtt_adeanalogo", message)
-    
- 
-else:
-    st.write('')
+# Componente de Streamlit para el Live Feed
+webrtc_streamer(
+    key="reconocimiento-ia",
+    video_frame_callback=video_frame_callback,
+    rtc_configuration={
+        # Servidor STUN gratuito de Google para establecer la conexión WebRTC
+        "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+    },
+    media_stream_constraints={"video": True, "audio": False}, # Desactivar audio evita eco
+    video_html_attrs=VideoHTMLAttributes(autoPlay=True, controls=False, playsInline=True)
+)
