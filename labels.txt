@@ -1,0 +1,3 @@
+0 Gato_Correcto
+1 Gato_Incorrecto
+2 Vacio
