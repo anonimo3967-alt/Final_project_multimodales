@@ -55,7 +55,7 @@ def inicializar_recursos():
     
     try:
         cliente_mqtt.connect(BROKER_IP, PORT, 60)
-        cliente_mqtt.subscribe(TOPIC_STATUS) // Nos suscribimos al reporte de Wokwi
+        cliente_mqtt.subscribe(TOPIC_STATUS) # Nos suscribimos al reporte de Wokwi
         cliente_mqtt.loop_start()
     except Exception as e:
         st.error(f"No se pudo conectar al Broker MQTT: {e}")
