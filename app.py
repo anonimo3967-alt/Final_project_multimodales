@@ -22,18 +22,17 @@ if "michi_candidato" not in st.session_state:
     st.session_state.michi_candidato = "Nadie"
 if "estado_motor_actual" not in st.session_state:
     st.session_state.estado_motor_actual = "NADIE"
-    
-# NUEVA VARIABLE: Para guardar la confirmación física del ESP32
 if "confirmacion_hardware" not in st.session_state:
     st.session_state.confirmacion_hardware = "Esperando conexión..."
 
 # -------------------------------------------------------------------------
-# 1. CONFIGURACIÓN MQTT Y CALLBACK DE ESCUCHA (NUEVO)
+# 1. CONFIGURACIÓN MQTT Y CARGA DEL MODELO DE IA (REPARADO)
 # -------------------------------------------------------------------------
 BROKER_IP = "157.230.214.127"
 PORT = 1883
 TOPIC_CONTROL = "cmqtt_sdesi"        # Lo que Streamlit envía
 TOPIC_STATUS = "cmqtt_sdesi_status"   # Lo que Streamlit recibe de Wokwi
+CLIENT_ID = "stream_client_michi_voice_99"
 
 # Función que se ejecuta automáticamente cuando Wokwi publica algo
 def al_recibir_mensaje(client, userdata, message):
@@ -48,7 +47,8 @@ def inicializar_recursos():
         modelo_keras = None
         st.error(f"Error crítico al cargar modelo: {e}")
         
-    cliente_mqtt = mqtt.Client(CLIENT_ID="stream_client_michi_voice_99")
+    # CORRECCIÓN AQUÍ: Pasamos el CLIENT_ID de forma correcta sin usar parámetros inválidos
+    cliente_mqtt = mqtt.Client(client_id=CLIENT_ID)
     
     # Asignamos la función de escucha
     cliente_mqtt.on_message = al_recibir_mensaje
@@ -91,7 +91,6 @@ elif estado_real == "TODO_CERRADO":
 else:
     st.sidebar.warning(f"⏳ Estado: {estado_real}")
 
-# Botón manual para refrescar el estado de la barra lateral si se desea
 if st.sidebar.button("🔄 Refrescar Telemetría"):
     st.rerun()
 
