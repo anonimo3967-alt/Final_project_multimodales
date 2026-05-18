@@ -6,14 +6,14 @@ import tensorflow as tf
 import paho.mqtt.client as mqtt
 import json
 
-# NUEVAS LIBRERÍAS PARA VOZ
+# LIBRERÍAS PARA EL CONTROL DE VOZ
 from streamlit_mic_recorder import mic_recorder
 import speech_recognition as sr
 import io
 
-st.set_page_config(page_title="Control por Voz Comedero Michi", layout="centered")
+st.set_page_config(page_title="Control por Voz e IA - Comedero", layout="centered")
 st.title("🐱 Sistema de Comedero por Voz e IA")
-st.write("La IA identifica al gato en pantalla, pero tú decides cuándo abrir con tu voz.")
+st.write("La IA mide la confianza en pantalla, pero tú decides cuándo abrir con tu voz.")
 
 # -------------------------------------------------------------------------
 # 1. CONFIGURACIÓN MQTT Y MODELO IA
@@ -41,6 +41,8 @@ def inicializar_recursos():
     return modelo_keras, cliente_mqtt
 
 model, client1 = inicializar_recursos()
+
+# Ajusta el orden de estas etiquetas según tu modelo de Teachable Machine
 ETIQUETAS = ["Gato Permitido", "Gato Intruso", "Nadie"]
 
 # -------------------------------------------------------------------------
@@ -59,7 +61,7 @@ def procesar_y_clasificar(imagen_pil):
     return ETIQUETAS[index], prediction[0][index]
 
 # -------------------------------------------------------------------------
-# 3. PIPELINE DE LA CÁMARA (SOLO IDENTIFICA, NO ENVÍA MQTT)
+# 3. PIPELINE DE LA CÁMARA (CON BARRA DE CONFIANZA INCLUIDA)
 # -------------------------------------------------------------------------
 @st.fragment
 def pipeline_camara():
@@ -69,22 +71,25 @@ def pipeline_camara():
         img_pil = Image.open(imagen_feed).convert("RGB")
         resultado, confianza = procesar_y_clasificar(img_pil)
         
-        # Mostramos quién está en la cámara de forma puramente informativa
+        # --- AQUÍ ESTÁ LA BARRA DE CONFIANZA QUE SE MUEVE ---
+        st.write(f"Identificación actual de la IA: **{resultado}**")
+        st.progress(float(confianza), text=f"Nivel de confianza: {confianza*100:.2f}%")
+        
+        # Alertas informativas en base a la detección
         if confianza > 0.75 and resultado != "Nadie":
-            st.info(f"🚨 La IA detecta en la cámara a: **{resultado}** ({confianza*100:.1f}%)")
-        else:
+            st.info(f"🚨 La IA detecta en la cámara a: **{resultado}**")
+        elif resultado == "Nadie":
             st.success("✨ Zona del comedero despejada.")
 
 pipeline_camara()
 
 # -------------------------------------------------------------------------
-# 4. NUEVO MÓDULO: RECONOCIMIENTO DE COMANDOS DE VOZ
+# 4. MÓDULO: RECONOCIMIENTO DE COMANDOS DE VOZ
 # -------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("🎙️ Control por Comando de Voz")
 st.write("Presiona el micrófono, di tu comando claramente en español y espera a que se procese.")
 
-# Inicializamos el grabador de audio en la interfaz web
 audio_grabado = mic_recorder(
     start_prompt="Presiona para Hablar 🎤",
     stop_prompt="Detener Grabación 🟥",
@@ -93,22 +98,15 @@ audio_grabado = mic_recorder(
 )
 
 if audio_grabado:
-    # Leemos los bytes del audio grabado desde el navegador web
     audio_bytes = audio_grabado['bytes']
-    
-    # Inicializamos el reconocedor de voz de Google (SpeechRecognition)
     recognizer = sr.Recognizer()
     
     try:
-        # Convertimos los bytes a un archivo de audio virtual que Python pueda procesar
         with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
             audio_data = recognizer.record(source)
-            # Convertimos voz a texto usando el motor en español
             texto_detectado = recognizer.recognize_google(audio_data, language="es-ES")
             
             st.write(f"Transcripción de voz: *\"{texto_detectado}\"*")
-            
-            # Pasamos todo el texto a minúsculas para facilitar las comparaciones
             comando_voz = texto_detectado.lower()
             
             # --- EVALUACIÓN DE COMANDOS DE VOZ ---
@@ -129,7 +127,6 @@ if audio_grabado:
             else:
                 st.warning("Comando no reconocido. Prueba diciendo: 'abrir plato a', 'abrir plato b' o 'cerrar'.")
             
-            # Si el comando de voz fue válido, lo enviamos de inmediato a Wokwi
             if payload:
                 client1.publish(TOPIC_DIGITAL, payload)
                 st.toast(f"Enviado por voz a Wokwi: {payload}", icon="📡")
