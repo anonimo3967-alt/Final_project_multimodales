@@ -1,8 +1,8 @@
 #include <ArduinoJson.h>    
-#include <WiFi.h>    
+#include <WiFi.h>           
 #include <PubSubClient.h>   
-#include <ESP32Servo.h> 
-#include <LiquidCrystal_I2C.h>
+#include <ESP32Servo.h>     
+#include <LiquidCrystal_I2C.h> 
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
@@ -13,45 +13,45 @@ const char* mqtt_server = "157.230.214.127";
 WiFiClient espClient;               
 PubSubClient client(espClient);     
 
-// DECLARACIÓN DE LOS DOS SERVOS
-Servo servoGatoA;
-Servo servoGatoB;
+Servo servoCoco;   // Servo en Pin 13
+Servo servoCanela; // Servo en Pin 12
 
 String sr2 = "";                    
 String inputString = "";            
 char rec[50];                       
 
+unsigned long ultimoIntentoReconexion = 0;
+
 void setup() {
-  pinMode(2, OUTPUT); // LED indicador de actividad
+  pinMode(2, OUTPUT); 
 
-  // Configuración de frecuencias y pines para ambos servos
-  servoGatoA.setPeriodHertz(50);
-  servoGatoA.attach(13, 500, 2400); // Servo A en Pin 13
+  servoCoco.setPeriodHertz(50);
+  servoCoco.attach(13, 500, 2400); 
 
-  servoGatoB.setPeriodHertz(50);
-  servoGatoB.attach(12, 500, 2400); // Servo B en Pin 12 (NUEVO)
+  servoCanela.setPeriodHertz(50);
+  servoCanela.attach(12, 500, 2400); 
 
-  // Posición inicial: Ambos platos cerrados (45 grados)
-  servoGatoA.write(45);
-  servoGatoB.write(45);
+  // Estado inicial de seguridad
+  servoCoco.write(45);
+  servoCanela.write(45);
 
   Serial.begin(115200);                    
   setup_wifi();                            
   client.setServer(mqtt_server, 1883);     
-  client.setCallback(callback);            
+  client.setCallback(callback); 
 
   lcd.init();
   lcd.backlight();
-  lcd.setCursor(0,0);
+  lcd.setCursor(0, 0);
   lcd.print("Comederos:");
-  lcd.setCursor(0,1);
+  lcd.setCursor(0, 1);
   lcd.print("Esperando michis");
 }
 
 void setup_wifi() {
   delay(10);                              
   Serial.println();                       
-  Serial.print("Conectando a ");          
+  Serial.print("Conectando a la red: ");          
   Serial.println(ssid);                   
   WiFi.begin(ssid, password);             
 
@@ -59,20 +59,22 @@ void setup_wifi() {
     delay(500);                           
     Serial.print(".");                    
   }
-  Serial.println("\nWiFi conectada");       
+  Serial.println("\nWiFi Conectada");       
 }
 
-void reconnect() {                                   
-  while (!client.connected()) {                      
-    Serial.print("Esperando Conexión MQTT...");
-    if (client.connect("unclientemas2910495")) {                
-      Serial.println("conectado");                        
-      client.subscribe("cmqtt_sdesi");           
-    } else {                                               
-      Serial.print("falla, rc=");                            
-      Serial.print(client.state());                          
-      Serial.println(" Intento de nuevo en 5 segundos");      
-      delay(5000);                                           
+void reconnect() {
+  if (!client.connected()) {
+    unsigned long tiempoActual = millis();
+    if (tiempoActual - ultimoIntentoReconexion >= 3000) {
+      ultimoIntentoReconexion = tiempoActual;
+      Serial.print("Intentando Conexión MQTT...");
+      if (client.connect("esp32_michi_client_unique_9921")) {                
+        Serial.println("¡Conectado!");                        
+        client.subscribe("cmqtt_sdesi");           
+      } else {                                               
+        Serial.print("falla, rc=");                            
+        Serial.println(client.state());                          
+      }
     }
   }
 }
@@ -81,10 +83,12 @@ void loop() {
   if (!client.connected()) {                                  
     reconnect();                                                 
   }
-  client.loop();                                             
+  client.loop(); 
 }
 
-// LÓGICA DE CONTROL DE LOS COMEDEROS INDEPENDIENTES
+// -------------------------------------------------------------------------
+// REEVALUACIÓN DEL CALLBACK: PROCESAMIENTO SÍNCRONO UNIFICADO
+// -------------------------------------------------------------------------
 void callback(char* topic, byte* payload, unsigned int length) {
   sr2 = "";
   for (int i = 0; i < length; i++) {
@@ -100,51 +104,57 @@ void callback(char* topic, byte* payload, unsigned int length) {
   DeserializationError error = deserializeJson(doc2, msg2);
 
   if (error) {
-    Serial.print(F("deserializeJson() failed: "));
+    Serial.print(F("Error deserializeJson(): "));
     Serial.println(error.f_str());
     return;
   }
 
-  String value = doc2["Act1"];
-  Serial.print("Comando recibido: ");
-  Serial.println(value);
- 
-  // CASO 1: Aparece el Gato A
-  if (value.equals("GATO_A")) {
-    digitalWrite(2, HIGH);
-    servoGatoA.write(145); // Abre plato A
-    servoGatoB.write(45);  // Cierra plato B (Seguridad)
+  // Extraemos ambas variables que ahora viajan siempre juntas
+  String gato_en_camara = doc2["Pantalla"];
+  String comando_motores = doc2["Act1"];
 
+  // 1. CONTROL SÍCRONO DE SERVOMOTORES
+  if (comando_motores.equals("GATO_A")) {
+    digitalWrite(2, HIGH);   
+    servoCoco.write(145);    // Abre Coco
+    servoCanela.write(45);   // Cierra Canela
+    
     lcd.clear();
-    lcd.setCursor(0,0);
-    lcd.print("Michi A detectado");
-    lcd.setCursor(0,1);
-    lcd.print("Plato A: ABIERTO");
+    lcd.setCursor(0, 0);
+    lcd.print("Orden por Voz:");
+    lcd.setCursor(0, 1);
+    lcd.print("Plato COCO: OPEN");
   }
-  
-  // CASO 2: Aparece el Gato B
-  else if (value.equals("GATO_B")) {
-    digitalWrite(2, HIGH);
-    servoGatoA.write(45);  // Cierra plato A (Seguridad)
-    servoGatoB.write(145); // Abre plato B
-
+  else if (comando_motores.equals("GATO_B")) {
+    digitalWrite(2, HIGH);   
+    servoCoco.write(45);     // Cierra Coco
+    servoCanela.write(145);  // Abre Canela
+    
     lcd.clear();
-    lcd.setCursor(0,0);
-    lcd.print("Michi B detectado");
-    lcd.setCursor(0,1);
-    lcd.print("Plato B: ABIERTO");
+    lcd.setCursor(0, 0);
+    lcd.print("Orden por Voz:");
+    lcd.setCursor(0, 1);
+    lcd.print("Plato CANELA:OPEN");
   }
-  
-  // CASO 3: No hay nadie en la cámara o la confianza es baja
-  else if (value.equals("NADIE")) {
-    digitalWrite(2, LOW);
-    servoGatoA.write(45);  // Cierra plato A
-    servoGatoB.write(45);  // Cierra plato B
+  else if (comando_motores.equals("NADIE")) {
+    digitalWrite(2, LOW);    
+    servoCoco.write(45);     // Cierra Coco
+    servoCanela.write(45);   // Cierra Canela
 
+    // Si los motores están cerrados, la pantalla se dedica 100% a mostrar lo que ve la IA
     lcd.clear();
-    lcd.setCursor(0,0);
-    lcd.print("Zona Vacia");
-    lcd.setCursor(0,1);
-    lcd.print("Platos: CERRADOS");
+    lcd.setCursor(0, 0);
+    lcd.print("IA Detecta:");
+    lcd.setCursor(0, 1);
+    
+    if (gato_en_camara.equals("Coco")) {
+      lcd.print("--> COCO ESPERA");
+    } 
+    else if (gato_en_camara.equals("Canela")) {
+      lcd.print("--> CANELA ESPERA");
+    } 
+    else {
+      lcd.print("Zona Vacia...");
+    }
   }
 }
