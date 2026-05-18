@@ -32,8 +32,8 @@ if "confirmacion_hardware" not in st.session_state:
 # -------------------------------------------------------------------------
 BROKER_IP = "157.230.214.127"
 PORT = 1883
-TOPIC_CONTROL = "cmqtt_sdesi"        // Lo que Streamlit envía
-TOPIC_STATUS = "cmqtt_sdesi_status"   // Lo que Streamlit recibe de Wokwi
+TOPIC_CONTROL = "cmqtt_sdesi"        # Lo que Streamlit envía
+TOPIC_STATUS = "cmqtt_sdesi_status"   # Lo que Streamlit recibe de Wokwi
 
 # Función que se ejecuta automáticamente cuando Wokwi publica algo
 def al_recibir_mensaje(client, userdata, message):
