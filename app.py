@@ -111,10 +111,10 @@ def pipeline_camara():
                 st.error(f"Error al enviar datos de pantalla a MQTT: {e}")
         
         # Cuadros de alerta visual en Streamlit
-        if confianza > 0.75 and resultado != "Nadie":
-            st.info(f"🚨 La IA detecta en la cámara a: **{resultado}**")
-        elif resultado == "Nadie":
-            st.success("✨ Zona del comedero despejada.")
+        if michi_actual != "Nadie":
+            st.info(f"🚨 La IA detecta en la cámara a: **{michi_actual}**")
+        else:
+            st.success("✨ Zona del comedero despejada (o confianza muy baja).")
 
 pipeline_camara()
 
