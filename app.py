@@ -11,9 +11,9 @@ from streamlit_mic_recorder import mic_recorder
 import speech_recognition as sr
 import io
 
-st.set_page_config(page_title="Control por Voz e IA - Comedero", layout="centered")
-st.title("🐱 Sistema de Comedero por Voz e IA")
-st.write("La IA mide la confianza en pantalla, pero tú decides cuándo abrir con tu voz.")
+st.set_page_config(page_title="Comedero Inteligente Coco y Canela", layout="centered")
+st.title("🐱 Comedero Inteligente de Coco y Canela")
+st.write("Control por voz para tus michis.")
 
 # -------------------------------------------------------------------------
 # 1. CONFIGURACIÓN MQTT Y MODELO IA
@@ -42,11 +42,12 @@ def inicializar_recursos():
 
 model, client1 = inicializar_recursos()
 
-# Ajusta el orden de estas etiquetas según tu modelo de Teachable Machine
-ETIQUETAS = ["Gato Permitido", "Gato Intruso", "Nadie"]
+# Reorganiza estas etiquetas según el orden de tu Teachable Machine
+# (Ejemplo: Clase 0 = Coco, Clase 1 = Canela, Clase 2 = Nadie)
+ETIQUETAS = ["Coco", "Canela", "Nadie"]
 
 # -------------------------------------------------------------------------
-# 2. PROCESAMIENTO DE IMAGEN (TEACHABLE MACHINE)
+# 2. PROCESAMIENTO DE IMAGEN
 # -------------------------------------------------------------------------
 def procesar_y_clasificar(imagen_pil):
     if model == None: return "Nadie", 0.0
@@ -61,21 +62,19 @@ def procesar_y_clasificar(imagen_pil):
     return ETIQUETAS[index], prediction[0][index]
 
 # -------------------------------------------------------------------------
-# 3. PIPELINE DE LA CÁMARA (CON BARRA DE CONFIANZA INCLUIDA)
+# 3. PIPELINE DE LA CÁMARA
 # -------------------------------------------------------------------------
 @st.fragment
 def pipeline_camara():
     imagen_feed = camera_input_live(width=420, height=315, debounce=800)
     if imagen_feed:
-        st.image(imagen_feed, caption="Monitoreo del Comedero", use_container_width=True)
+        st.image(imagen_feed, caption="Monitoreo en Vivo", use_container_width=True)
         img_pil = Image.open(imagen_feed).convert("RGB")
         resultado, confianza = procesar_y_clasificar(img_pil)
         
-        # --- AQUÍ ESTÁ LA BARRA DE CONFIANZA QUE SE MUEVE ---
         st.write(f"Identificación actual de la IA: **{resultado}**")
         st.progress(float(confianza), text=f"Nivel de confianza: {confianza*100:.2f}%")
         
-        # Alertas informativas en base a la detección
         if confianza > 0.75 and resultado != "Nadie":
             st.info(f"🚨 La IA detecta en la cámara a: **{resultado}**")
         elif resultado == "Nadie":
@@ -84,17 +83,17 @@ def pipeline_camara():
 pipeline_camara()
 
 # -------------------------------------------------------------------------
-# 4. MÓDULO: RECONOCIMIENTO DE COMANDOS DE VOZ
+# 4. MÓDULO: RECONOCIMIENTO DE COMANDOS DE VOZ (COCO Y CANELA)
 # -------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("🎙️ Control por Comando de Voz")
-st.write("Presiona el micrófono, di tu comando claramente en español y espera a que se procese.")
+st.write("Di comandos naturales como: *'abrir coco'*, *'abre el plato de canela'* o *'cerrar comederos'*.")
 
 audio_grabado = mic_recorder(
     start_prompt="Presiona para Hablar 🎤",
     stop_prompt="Detener Grabación 🟥",
     just_once=True,
-    format="wav",
+    format="wav", 
     key="grabador_voz"
 )
 
@@ -110,29 +109,29 @@ if audio_grabado:
             st.write(f"Transcripción de voz: *\"{texto_detectado}\"*")
             comando_voz = texto_detectado.lower()
             
-            # --- EVALUACIÓN DE COMANDOS DE VOZ ---
+            # --- EVALUACIÓN DE COMANDOS DE VOZ POR NOMBRE ---
             payload = None
             
-            if "abrir plato a" in comando_voz or "abrir plato 1" in comando_voz:
+            if "coco" in comando_voz:
                 payload = json.dumps({"Act1": "GATO_A"})
-                st.success("Comando detectado: Abriendo Plato A")
+                st.success("Comando detectado: Abriendo plato de Coco 🐱")
                 
-            elif "abrir plato b" in comando_voz or "abrir plato 2" in comando_voz:
+            elif "canela" in comando_voz:
                 payload = json.dumps({"Act1": "GATO_B"})
-                st.success("Comando detectado: Abriendo Plato B")
+                st.success("Comando detectado: Abriendo plato de Canela 🐱")
                 
-            elif "cerrar" in comando_voz or "quitar comida" in comando_voz:
+            elif "cerrar" in comando_voz or "quitar" in comando_voz or "nadie" in comando_voz:
                 payload = json.dumps({"Act1": "NADIE"})
-                st.error("Comando detectado: Cerrando todos los platos")
+                st.error("Comando detectado: Guardando comida / Cerrando comederos")
                 
             else:
-                st.warning("Comando no reconocido. Prueba diciendo: 'abrir plato a', 'abrir plato b' o 'cerrar'.")
+                st.warning("No reconocí el nombre. Intenta diciendo claramente 'Coco' o 'Canela'.")
             
             if payload:
                 client1.publish(TOPIC_DIGITAL, payload)
-                st.toast(f"Enviado por voz a Wokwi: {payload}", icon="📡")
+                st.toast(f"Enviado a Wokwi: {payload}", icon="📡")
                 
     except sr.UnknownValueError:
-        st.error("No pude entender el audio. Asegúrate de hablar claro y cerca del micrófono.")
+        st.error("No pude entender el audio. Intenta hablar más claro.")
     except sr.RequestError as e:
-        st.error(f"Error con el servicio de reconocimiento de voz: {e}")
+        st.error(f"Error con el servicio de voz: {e}")
