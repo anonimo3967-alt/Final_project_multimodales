@@ -22,22 +22,27 @@ if "michi_candidato" not in st.session_state:
     st.session_state.michi_candidato = "Nadie"
 if "estado_motor_actual" not in st.session_state:
     st.session_state.estado_motor_actual = "NADIE"
-if "confirmacion_hardware" not in st.session_state:
-    st.session_state.confirmacion_hardware = "Esperando conexión..."
+
+# CONTENEDOR SEGURO PARA LLAMADAS MULTI-HILO (Fuera del estado de Streamlit)
+if "datos_globales" not in st.get_サプライヤー_or_similar_globals if hasattr(st, "get_サプライヤー_or_similar_globals") else globals():
+    globals()["datos_globales"] = {"status_hardware": "Esperando conexión..."}
 
 # -------------------------------------------------------------------------
-# 1. CONFIGURACIÓN MQTT Y CARGA DEL MODELO DE IA (REPARADO)
+# 1. CONFIGURACIÓN MQTT Y CARGA DEL MODELO DE IA
 # -------------------------------------------------------------------------
 BROKER_IP = "157.230.214.127"
 PORT = 1883
-TOPIC_CONTROL = "cmqtt_sdesi"        # Lo que Streamlit envía
-TOPIC_STATUS = "cmqtt_sdesi_status"   # Lo que Streamlit recibe de Wokwi
+TOPIC_CONTROL = "cmqtt_sdesi"        
+TOPIC_STATUS = "cmqtt_sdesi_status"   
 CLIENT_ID = "stream_client_michi_voice_99"
 
-# Función que se ejecuta automáticamente cuando Wokwi publica algo
+# Callback de MQTT: Escribe en la memoria global segura
 def al_recibir_mensaje(client, userdata, message):
-    texto_recibido = str(message.payload.decode("utf-8"))
-    st.session_state.confirmacion_hardware = texto_recibido
+    try:
+        texto_recibido = str(message.payload.decode("utf-8"))
+        globals()["datos_globales"]["status_hardware"] = texto_recibido
+    except Exception as e:
+        pass
 
 @st.cache_resource
 def inicializar_recursos():
@@ -47,15 +52,12 @@ def inicializar_recursos():
         modelo_keras = None
         st.error(f"Error crítico al cargar modelo: {e}")
         
-    # CORRECCIÓN AQUÍ: Pasamos el CLIENT_ID de forma correcta sin usar parámetros inválidos
     cliente_mqtt = mqtt.Client(client_id=CLIENT_ID)
-    
-    # Asignamos la función de escucha
     cliente_mqtt.on_message = al_recibir_mensaje
     
     try:
         cliente_mqtt.connect(BROKER_IP, PORT, 60)
-        cliente_mqtt.subscribe(TOPIC_STATUS) # Nos suscribimos al reporte de Wokwi
+        cliente_mqtt.subscribe(TOPIC_STATUS) 
         cliente_mqtt.loop_start()
     except Exception as e:
         st.error(f"No se pudo conectar al Broker MQTT: {e}")
@@ -76,11 +78,12 @@ def enviar_estado_sistema():
         st.error(f"Error al enviar datos: {e}")
 
 # -------------------------------------------------------------------------
-# INDICADOR VISUAL DE TELEMETRÍA REAL (PANEL DE FEEDBACK)
+# INDICADOR VISUAL DE TELEMETRÍA REAL
 # -------------------------------------------------------------------------
 st.sidebar.markdown("### 🛰️ Telemetría del Circuito (Wokwi)")
 
-estado_real = st.session_state.confirmacion_hardware
+# Leemos directamente de la memoria global actualizada por MQTT
+estado_real = globals()["datos_globales"]["status_hardware"]
 
 if estado_real == "COCO_ABIERTO":
     st.sidebar.success("🔓 Confirmado: Compuerta de COCO Abierta")
