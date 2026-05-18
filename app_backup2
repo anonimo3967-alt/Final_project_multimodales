@@ -81,41 +81,41 @@ def procesar_y_clasificar(imagen_pil):
 # -------------------------------------------------------------------------
 @st.fragment
 def pipeline_camara():
-    # Resolución baja y debouncing óptimo para rendimiento fluido en la nube
     imagen_feed = camera_input_live(width=420, height=315, debounce=750)
     
     if imagen_feed:
-        # Dibujar feed en pantalla
-        st.image(imagen_feed, caption="Cámara de Monitoreo", use_container_width=True)
+        st.image(imagen_feed, caption="Cámara del Comedero", use_container_width=True)
         
-        # Procesar Frame
         img_pil = Image.open(imagen_feed).convert("RGB")
         resultado, confianza = procesar_y_clasificar(img_pil)
         
-        # Mostrar métricas en tiempo real en la UI
         st.subheader(f"Resultado: **{resultado}**")
         st.progress(float(confianza), text=f"Confianza: {confianza*100:.2f}%")
         
-        # --- LÓGICA DE DECISIONES Y ENVÍO MQTT ---
-        # Definimos qué comando enviar según el resultado de la IA
-        if resultado == "Gato Permitido" and confianza > 0.75:
-            comando_actual = "ON"
+        # --- NUEVA LÓGICA DE DECISIONES PARA DOS COMEDEROS ---
+        # Filtramos por confianza (mínimo 75% para accionar)
+        if confianza > 0.75:
+            if resultado == "Gato Permitido":   # Tu Gato A
+                comando_actual = "GATO_A"
+            elif resultado == "Gato Intruso":   # Tu Gato B (que ahora tiene su propio plato)
+                comando_actual = "GATO_B"
+            else:
+                comando_actual = "NADIE"
         else:
-            # Si es el "Gato Intruso" o no hay "Nadie", mandamos cerrar el acceso
-            comando_actual = "OFF"
+            comando_actual = "NADIE"
             
-        # Solo publicamos en MQTT si el comando cambió (evita spam al ESP32)
+        # Enviar por MQTT solo si el estado cambió
         if comando_actual != st.session_state.ultimo_comando:
             st.session_state.ultimo_comando = comando_actual
             
-            # Construir exactamente el JSON que tu Wokwi espera deserializar: {"Act1": "ON"}
+            # Seguimos usando la estructura JSON que ya conoce tu ESP32
             payload = json.dumps({"Act1": comando_actual})
             
             try:
                 client1.publish(TOPIC_DIGITAL, payload)
-                st.toast(f"Publicado en {TOPIC_DIGITAL} -> {payload}", icon="📡")
+                st.toast(f"Publicado: {payload}", icon="📡")
             except Exception as e:
-                st.error(f"Error al enviar mensaje MQTT: {e}")
+                st.error(f"Error MQTT: {e}")
 
 # Ejecutar componente aislado de la cámara
 pipeline_camara()
