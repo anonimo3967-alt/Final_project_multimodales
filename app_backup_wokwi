@@ -1,156 +1,150 @@
-#include <ArduinoJson.h>    // Biblioteca para el formato JSON
-#include <WiFi.h>    //Biblioteca para el manejo de WIFI del esp8266
-#include <PubSubClient.h>   //Biblioteca para el manejo del protocolo MQTT
+#include <ArduinoJson.h>    
+#include <WiFi.h>    
+#include <PubSubClient.h>   
 #include <ESP32Servo.h> 
 #include <LiquidCrystal_I2C.h>
+
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-StaticJsonDocument<200> doc;
-StaticJsonDocument<200> doc2;
-const char* ssid = "Wokwi-GUEST";  //Escribe la identificación de tu red
-const char* password = ""; //Escribe el password de tu red
-const char* mqtt_server = "157.230.214.127"; // Escribe la dirección de tu PC asignada por tu red
+const char* ssid = "Wokwi-GUEST";  
+const char* password = ""; 
+const char* mqtt_server = "157.230.214.127"; 
 
-WiFiClient espClient;               // Crea una instancia tipo WifiCliente llamado espClient
-PubSubClient client(espClient);     //Gestiona la Biblioteca de publicación-subscripción para el cliente creado
+WiFiClient espClient;               
+PubSubClient client(espClient);     
 
-Servo myservo;
-long lastMsg = 0;                   // Declaración de variable para conteo de tiempo de transmisión de mensaje
-char msg[50];                       // Decalaración de buffer para guardar el mensaje recibido
-String sr2 = "";                    //Declaración de la variable sr2 para guardar la cadena de caracteres recibidos
-String inputString = "";            //Declaración de variable auxiliares para datos recibidos
-static char buffer2[6];             //Declaración de variables para almacenar caracteres
-char rec[50];                       //Declaración de varible auxiliar para la recepción de mensajes
+// DECLARACIÓN DE LOS DOS SERVOS
+Servo servoGatoA;
+Servo servoGatoB;
+
+String sr2 = "";                    
+String inputString = "";            
+char rec[50];                       
 
 void setup() {
-  pinMode(2,OUTPUT);
-  myservo.setPeriodHertz(50);// Standard 50hz servo
-  myservo.attach(13, 500, 2400); 
-  Serial.begin(115200);                    //Inicializa la comunicación serial a una velocidad de 115200
-  setup_wifi();                            //Inicializa la Biblioteca WIFI
-  client.setServer(mqtt_server, 1883);     //Inicializa el servidor con las dirección descrita en el encabezado y el puerto que usa
-  client.setCallback(callback);            //Inicializa la función que se activa cuando llegan mensajes
-  pinMode(19, INPUT);
+  pinMode(2, OUTPUT); // LED indicador de actividad
+
+  // Configuración de frecuencias y pines para ambos servos
+  servoGatoA.setPeriodHertz(50);
+  servoGatoA.attach(13, 500, 2400); // Servo A en Pin 13
+
+  servoGatoB.setPeriodHertz(50);
+  servoGatoB.attach(12, 500, 2400); // Servo B en Pin 12 (NUEVO)
+
+  // Posición inicial: Ambos platos cerrados (45 grados)
+  servoGatoA.write(45);
+  servoGatoB.write(45);
+
+  Serial.begin(115200);                    
+  setup_wifi();                            
+  client.setServer(mqtt_server, 1883);     
+  client.setCallback(callback);            
 
   lcd.init();
   lcd.backlight();
-
   lcd.setCursor(0,0);
-  lcd.print("Esperando...");
-
+  lcd.print("Comederos:");
+  lcd.setCursor(0,1);
+  lcd.print("Esperando michis");
 }
 
 void setup_wifi() {
+  delay(10);                              
+  Serial.println();                       
+  Serial.print("Conectando a ");          
+  Serial.println(ssid);                   
+  WiFi.begin(ssid, password);             
 
-  delay(10);                              // espera 10 milisegundos
-  Serial.println();                       // Imprime un espacio de linea
-  Serial.print("Conectando a ");          // Imprime la leyenda "Conectando a"
-  Serial.println(ssid);                   // Imprime la identificación de la red a al que se conecta
-  WiFi.begin(ssid, password);             // Realiza la conexión a la red configurada usando el password configurado en el encabezado
-
-  while (WiFi.status() != WL_CONNECTED) { // Espera mientras se establece la conexión
-    delay(500);                           // Espera 500 milisegundos
-    Serial.print(".");                    // Imprime en la terminal "." hasta que se logre la conexión
+  while (WiFi.status() != WL_CONNECTED) { 
+    delay(500);                           
+    Serial.print(".");                    
   }
-
-  Serial.println("");                     //Imprime en la terminal un espacio
-  Serial.println("WiFi connecteda");       //Imprime en la terminal un espacio
-  Serial.println("dirección IP: ");       //Imprime en la terminal "dirección IP: "
-  Serial.println(WiFi.localIP());         //Imprime en la terminal "dirección IP asignada al microcontrolador
+  Serial.println("\nWiFi conectada");       
 }
 
-
-void reconnect() {                                   //función para la reconexión
-
-  while (!client.connected()) {                      //Espera hasta que se establezca la reconexión
+void reconnect() {                                   
+  while (!client.connected()) {                      
     Serial.print("Esperando Conexión MQTT...");
-
-    if (client.connect("unclientemas2910495")) {                //Se conecta como cliente con el nombre ESP8266Cliente
-      Serial.println("connectada");                        //Imprime en la terminal conectado con el cliente
-      //client.subscribe("M2MQTT_Unity/test"); 
-      client.subscribe("cmqtt_adeanalogo");  
+    if (client.connect("unclientemas2910495")) {                
+      Serial.println("conectado");                        
       client.subscribe("cmqtt_sdesi");           
-    } else {                                               // si no logra conectarse
-      Serial.print("falla, rc=");                            //Imprime en la terminal "falla, rc="
-      Serial.print(client.state());                          //Imprime en la terminal el tipo de falla de conexión (un múmero)
-      Serial.println("Intento de nuevo en 5 segundos");      //Imprime en la terminal "Intento de nuevo en 5 segundos"
-      delay(5000);                                           //Espera 5 segundos
+    } else {                                               
+      Serial.print("falla, rc=");                            
+      Serial.print(client.state());                          
+      Serial.println(" Intento de nuevo en 5 segundos");      
+      delay(5000);                                           
     }
   }
 }
 
-
 void loop() {
-
   if (!client.connected()) {                                  
     reconnect();                                                 
   }
   client.loop();                                             
-                                                  
-
 }
 
+// LÓGICA DE CONTROL DE LOS COMEDEROS INDEPENDIENTES
 void callback(char* topic, byte* payload, unsigned int length) {
-
-
   sr2 = "";
   for (int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
     rec[i] = payload[i];
     sr2 += rec[i];
     inputString = sr2;
-
   }
 
-  char msg2[inputString.length()];
-  Serial.println(msg2);
+  char msg2[inputString.length() + 1];
   inputString.toCharArray(msg2, inputString.length() + 1);
-  StaticJsonDocument<200> doc2;
   
+  StaticJsonDocument<200> doc2;
   DeserializationError error = deserializeJson(doc2, msg2);
 
-  // Test if parsing succeeds.
   if (error) {
     Serial.print(F("deserializeJson() failed: "));
     Serial.println(error.f_str());
     return;
   }
 
-  String  value = doc2["Act1"];
-  //String  method_ = doc2["method"];
-  float  value_servo = doc2["Analog"];
+  String value = doc2["Act1"];
+  Serial.print("Comando recibido: ");
+  Serial.println(value);
  
-    if (value.equals("OFF"))
-    {
-      digitalWrite(2, LOW);
-      myservo.write(45);
+  // CASO 1: Aparece el Gato A
+  if (value.equals("GATO_A")) {
+    digitalWrite(2, HIGH);
+    servoGatoA.write(145); // Abre plato A
+    servoGatoB.write(45);  // Cierra plato B (Seguridad)
 
-      lcd.clear();
-
-      lcd.setCursor(0,0);
-      lcd.print("Intruso");
-
-      lcd.setCursor(0,1);
-      lcd.print("Acceso NO");
-    }
-    if (value.equals("ON")) {
-      
-      digitalWrite(2, HIGH);
-      myservo.write(145);
-
-      lcd.clear();
-
-      lcd.setCursor(0,0);
-      lcd.print("Michi Correcto");
-
-      lcd.setCursor(0,1);
-      lcd.print("Comida OPEN");  
-
-
-    }
-
-   if (value_servo!=0)
-     {int val = map(value_servo, 0, 100, 0, 180);
-      myservo.write(val);   
-     }
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Michi A detectado");
+    lcd.setCursor(0,1);
+    lcd.print("Plato A: ABIERTO");
   }
+  
+  // CASO 2: Aparece el Gato B
+  else if (value.equals("GATO_B")) {
+    digitalWrite(2, HIGH);
+    servoGatoA.write(45);  // Cierra plato A (Seguridad)
+    servoGatoB.write(145); // Abre plato B
+
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Michi B detectado");
+    lcd.setCursor(0,1);
+    lcd.print("Plato B: ABIERTO");
+  }
+  
+  // CASO 3: No hay nadie en la cámara o la confianza es baja
+  else if (value.equals("NADIE")) {
+    digitalWrite(2, LOW);
+    servoGatoA.write(45);  // Cierra plato A
+    servoGatoB.write(45);  // Cierra plato B
+
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Zona Vacia");
+    lcd.setCursor(0,1);
+    lcd.print("Platos: CERRADOS");
+  }
+}
