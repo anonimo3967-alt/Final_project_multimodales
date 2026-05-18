@@ -6,33 +6,35 @@ import tensorflow as tf
 import paho.mqtt.client as mqtt
 import json
 
-st.set_page_config(page_title="Control de Acceso Michi IA", layout="centered")
-st.title("🐱 Sistema de Acceso Inteligente para Gatos")
-st.write("Procesando video localmente en el navegador y ejecutando IA en Streamlit Cloud.")
+# LIBRERÍAS REQUERIDAS PARA EL CONTROL DE VOZ
+from streamlit_mic_recorder import mic_recorder
+import speech_recognition as sr
+import io
+
+st.set_page_config(page_title="Comedero Inteligente Coco y Canela", layout="centered")
+st.title("🐱 Comedero Inteligente de Coco y Canela")
+st.write("Sistema unificado: Control síncrono por Voz e IA.")
 
 # -------------------------------------------------------------------------
-# 1. CONFIGURACIÓN MQTT Y CONFIGURACIÓN DE PARÁMETROS TRADICIONALES
+# 1. CONFIGURACIÓN MQTT Y CARGA DEL MODELO DE IA (CACHEADO)
 # -------------------------------------------------------------------------
 BROKER_IP = "157.230.214.127"
 PORT = 1883
 TOPIC_DIGITAL = "cmqtt_sdesi"
-CLIENT_ID = "stream_client_michi_992"
+CLIENT_ID = "stream_client_michi_voice_99"
 
-# Inicializar modelo y cliente MQTT usando cache para que no ralentice la app
 @st.cache_resource
 def inicializar_recursos():
-    # Carga tu modelo exportado de Teachable Machine
     try:
         modelo_keras = tf.keras.models.load_model('keras_model.h5', compile=False)
     except Exception as e:
         modelo_keras = None
-        st.error(f"Error al cargar 'keras_model.h5'. Asegúrate de subirlo a tu GitHub: {e}")
+        st.error(f"Error crítico: No se pudo cargar 'keras_model.h5': {e}")
         
-    # Inicializar cliente MQTT
     cliente_mqtt = mqtt.Client(CLIENT_ID)
     try:
         cliente_mqtt.connect(BROKER_IP, PORT, 60)
-        cliente_mqtt.loop_start() # Inicia el loop en segundo plano para asegurar envíos estables
+        cliente_mqtt.loop_start()
     except Exception as e:
         st.error(f"No se pudo conectar al Broker MQTT ({BROKER_IP}): {e}")
         
@@ -40,107 +42,135 @@ def inicializar_recursos():
 
 model, client1 = inicializar_recursos()
 
-# Lee las etiquetas de las clases (Normalmente Teachable Machine exporta: 0 Gato_Permitido, 1 Gato_Intruso, 2 Vacio)
-# ¡MODIFICA ESTE ORDEN según cómo hayan quedado tus clases en Teachable Machine!
-ETIQUETAS = ["Gato Permitido", "Gato Intruso", "Nadie"]
+ETIQUETAS = ["Coco", "Canela", "Nadie"]
 
-# Estado para controlar qué se envió por última vez y no saturar el Broker con datos idénticos
-if "ultimo_comando" not in st.session_state:
-    st.session_state.ultimo_comando = None
+# --- VARIABLES DE ESTADO UNIFICADAS ---
+if "ultimo_michi_visto" not in st.session_state:
+    st.session_state.ultimo_michi_visto = "Nadie"
+if "contador_estabilidad" not in st.session_state:
+    st.session_state.contador_estabilidad = 0
+if "michi_candidato" not in st.session_state:
+    st.session_state.michi_candidato = "Nadie"
+if "estado_motor_actual" not in st.session_state:
+    st.session_state.estado_motor_actual = "NADIE" # Estados: GATO_A, GATO_B, NADIE
+
+# Función para enviar el estado global del sistema de forma segura
+def enviar_estado_sistema():
+    # Enviamos ambas variables juntas en un único paquete JSON
+    payload = json.dumps({
+        "Pantalla": st.session_state.ultimo_michi_visto,
+        "Act1": st.session_state.estado_motor_actual
+    })
+    try:
+        client1.publish(TOPIC_DIGITAL, payload, qos=1)
+    except Exception as e:
+        st.error(f"Error al enviar datos: {e}")
 
 # -------------------------------------------------------------------------
-# 2. PROCESAMIENTO ESTRICTO DE TEACHABLE MACHINE
+# 2. PROCESAMIENTO MATEMÁTICO DE LA IMAGEN
 # -------------------------------------------------------------------------
 def procesar_y_clasificar(imagen_pil):
-    if model == None:
+    if model is None: 
         return "Nadie", 0.0
-        
-    # 1. Ajustar el tamaño exacto que espera el modelo (224, 224)
     size = (224, 224)
     image = ImageOps.fit(imagen_pil, size, Image.Resampling.LANCZOS)
-    
-    # 2. Convertir la imagen a un array de numpy
     image_array = np.asarray(image)
-    
-    # 3. Normalización matemática exacta de Teachable Machine (-1 a 1)
     normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1.0
-    
-    # 4. Crear el lote (Batch) para meterlo a la predicción
     data = np.ndarray(shape=(1, 224, 224, 3), dtype=np.float32)
     data[0] = normalized_image_array
-    
-    # 5. Predicción
     prediction = model.predict(data, verbose=0)
     index = np.argmax(prediction[0])
-    score = prediction[0][index]
-    
-    return ETIQUETAS[index], score
+    return ETIQUETAS[index], prediction[0][index]
 
 # -------------------------------------------------------------------------
-# 3. CAPTURA EN VIVO Y CONTROL DE LOGICA IOT
+# 3. PIPELINE DE LA CÁMARA (MONITOREO PASIVO)
 # -------------------------------------------------------------------------
 @st.fragment
 def pipeline_camara():
-    imagen_feed = camera_input_live(width=420, height=315, debounce=750)
+    imagen_feed = camera_input_live(width=420, height=315, debounce=900)
     
     if imagen_feed:
-        st.image(imagen_feed, caption="Cámara del Comedero", use_container_width=True)
-        
+        st.image(imagen_feed, caption="Monitoreo en Vivo", use_container_width=True)
         img_pil = Image.open(imagen_feed).convert("RGB")
         resultado, confianza = procesar_y_clasificar(img_pil)
         
-        st.subheader(f"Resultado: **{resultado}**")
+        st.write(f"Identificación actual de la IA: **{resultado}**")
         st.progress(float(confianza), text=f"Confianza: {confianza*100:.2f}%")
         
-        # --- NUEVA LÓGICA DE DECISIONES PARA DOS COMEDEROS ---
-        # Filtramos por confianza (mínimo 75% para accionar)
-        if confianza > 0.75:
-            if resultado == "Gato Permitido":   # Tu Gato A
-                comando_actual = "GATO_A"
-            elif resultado == "Gato Intruso":   # Tu Gato B (que ahora tiene su propio plato)
-                comando_actual = "GATO_B"
-            else:
-                comando_actual = "NADIE"
+        michi_detectado_ahora = resultado if confianza > 0.75 else "Nadie"
+        
+        if michi_detectado_ahora == st.session_state.michi_candidato:
+            st.session_state.contador_estabilidad += 1
         else:
-            comando_actual = "NADIE"
+            st.session_state.michi_candidato = michi_detectado_ahora
+            st.session_state.contador_estabilidad = 0
             
-        # Enviar por MQTT solo si el estado cambió
-        if comando_actual != st.session_state.ultimo_comando:
-            st.session_state.ultimo_comando = comando_actual
-            
-            # Seguimos usando la estructura JSON que ya conoce tu ESP32
-            payload = json.dumps({"Act1": comando_actual})
-            
-            try:
-                client1.publish(TOPIC_DIGITAL, payload)
-                st.toast(f"Publicado: {payload}", icon="📡")
-            except Exception as e:
-                st.error(f"Error MQTT: {e}")
+        if st.session_state.contador_estabilidad >= 2:
+            if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
+                st.session_state.ultimo_michi_visto = michi_detectado_ahora
+                # Al cambiar el gato, refrescamos el estado enviando el paquete único
+                enviar_estado_sistema()
+        
+        if st.session_state.ultimo_michi_visto != "Nadie":
+            st.info(f"🚨 La IA detecta en la cámara a: **{st.session_state.ultimo_michi_visto}**")
+        else:
+            st.success("✨ Zona del comedero despejada.")
 
-# Ejecutar componente aislado de la cámara
 pipeline_camara()
 
 # -------------------------------------------------------------------------
-# 4. CONTROLES MANUALES EXTRAS (Mantenidos de tu código viejo)
+# 4. RECONOCIMIENTO DE COMANDOS DE VOZ (CONTROL DE MOTORES)
 # -------------------------------------------------------------------------
 st.markdown("---")
-st.subheader("Controles Manuales de Respaldo")
+st.subheader("🎙️ Control por Comando de Voz")
+st.write("Di comandos como: *'abrir coco'*, *'abre el plato de canela'* o *'cerrar comederos'*.")
 
-col1, col2 = st.columns(2)
-with col1:
-    if st.button('Forzar Apertura (ON)', use_container_width=True):
-        st.session_state.ultimo_comando = "ON"
-        client1.publish(TOPIC_DIGITAL, json.dumps({"Act1": "ON"}))
-        st.success("Comando manual ON enviado.")
-with col2:
-    if st.button('Forzar Cierre (OFF)', use_container_width=True):
-        st.session_state.ultimo_comando = "OFF"
-        client1.publish(TOPIC_DIGITAL, json.dumps({"Act1": "OFF"}))
-        st.error("Comando manual OFF enviado.")
+audio_grabado = mic_recorder(
+    start_prompt="Presiona para Hablar 🎤",
+    stop_prompt="Detener Grabación 🟥",
+    just_once=True,
+    format="wav", 
+    key="grabador_voz"
+)
 
-# Slider analógico para el servo
-valores_servo = st.slider('Control manual del ángulo del Servo', 0.0, 100.0, 50.0)
-if st.button('Enviar ángulo analógico'):
-    payload_analog = json.dumps({"Analog": float(valores_servo)})
-    client1.publish("cmqtt_adeanalogo", payload_analog)
-    st.info(f"Ángulo enviado: {valores_servo}")
+if audio_grabado:
+    audio_bytes = audio_grabado['bytes']
+    recognizer = sr.Recognizer()
+    
+    try:
+        with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
+            audio_data = recognizer.record(source)
+            texto_detectado = recognizer.recognize_google(audio_data, language="es-ES")
+            
+            st.write(f"Transcripción: *\"{texto_detectado}\"*")
+            comando_voz = texto_detectado.lower()
+            
+            comando_valido = False
+            
+            if "coco" in comando_voz:
+                st.session_state.estado_motor_actual = "GATO_A"
+                st.success("Comando aceptado: Abriendo el plato de Coco 🐱")
+                comando_valido = True
+                
+            elif "canela" in comando_voz:
+                st.session_state.estado_motor_actual = "GATO_B"
+                st.success("Comando aceptado: Abriendo el plato de Canela 🐱")
+                comando_valido = True
+                
+            elif "cerrar" in comando_voz or "quitar" in comando_voz or "nadie" in comando_voz:
+                st.session_state.estado_motor_actual = "NADIE"
+                st.error("Comando aceptado: Cerrando todos los comederos")
+                comando_valido = True
+                
+            else:
+                st.warning("Comando no reconocido. Di claramente 'Coco', 'Canela' o 'Cerrar'.")
+            
+            # Si el comando de voz modificó el estado, enviamos la actualización completa de inmediato
+            if comando_valido:
+                enviar_estado_sistema()
+                st.toast("¡Comando enviado exitosamente a Wokwi!", icon="📡")
+                
+    except sr.UnknownValueError:
+        st.error("El motor de voz no pudo entender el audio.")
+    except sr.RequestError as e:
+        st.error(f"Error con el servicio de voz: {e}")
