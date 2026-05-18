@@ -11,10 +11,9 @@ from streamlit_mic_recorder import mic_recorder
 import speech_recognition as sr
 import io
 
-# Configuración estética de la página web
 st.set_page_config(page_title="Comedero Inteligente Coco y Canela", layout="centered")
 st.title("🐱 Comedero Inteligente de Coco y Canela")
-st.write("La IA identifica pasivamente al gato en pantalla, pero tú decides cuándo abrir con tu voz.")
+st.write("Sistema unificado: Control síncrono por Voz e IA.")
 
 # -------------------------------------------------------------------------
 # 1. CONFIGURACIÓN MQTT Y CARGA DEL MODELO DE IA (CACHEADO)
@@ -43,16 +42,29 @@ def inicializar_recursos():
 
 model, client1 = inicializar_recursos()
 
-# Orden de las clases según Teachable Machine
 ETIQUETAS = ["Coco", "Canela", "Nadie"]
 
-# --- VARIABLES DE SESIÓN (INICIALIZACIÓN) ---
+# --- VARIABLES DE ESTADO UNIFICADAS ---
 if "ultimo_michi_visto" not in st.session_state:
     st.session_state.ultimo_michi_visto = "Nadie"
 if "contador_estabilidad" not in st.session_state:
     st.session_state.contador_estabilidad = 0
 if "michi_candidato" not in st.session_state:
     st.session_state.michi_candidato = "Nadie"
+if "estado_motor_actual" not in st.session_state:
+    st.session_state.estado_motor_actual = "NADIE" # Estados: GATO_A, GATO_B, NADIE
+
+# Función para enviar el estado global del sistema de forma segura
+def enviar_estado_sistema():
+    # Enviamos ambas variables juntas en un único paquete JSON
+    payload = json.dumps({
+        "Pantalla": st.session_state.ultimo_michi_visto,
+        "Act1": st.session_state.estado_motor_actual
+    })
+    try:
+        client1.publish(TOPIC_DIGITAL, payload, qos=1)
+    except Exception as e:
+        st.error(f"Error al enviar datos: {e}")
 
 # -------------------------------------------------------------------------
 # 2. PROCESAMIENTO MATEMÁTICO DE LA IMAGEN
@@ -60,62 +72,45 @@ if "michi_candidato" not in st.session_state:
 def procesar_y_clasificar(imagen_pil):
     if model is None: 
         return "Nadie", 0.0
-        
     size = (224, 224)
     image = ImageOps.fit(imagen_pil, size, Image.Resampling.LANCZOS)
     image_array = np.asarray(image)
-    
-    # Normalización exacta de Teachable Machine (-1.0 a 1.0)
     normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1.0
-    
     data = np.ndarray(shape=(1, 224, 224, 3), dtype=np.float32)
     data[0] = normalized_image_array
-    
     prediction = model.predict(data, verbose=0)
     index = np.argmax(prediction[0])
     return ETIQUETAS[index], prediction[0][index]
 
 # -------------------------------------------------------------------------
-# 3. PIPELINE DE LA CÁMARA (MONITOREO CON FILTRO DE ESTABILIDAD)
+# 3. PIPELINE DE LA CÁMARA (MONITOREO PASIVO)
 # -------------------------------------------------------------------------
 @st.fragment
 def pipeline_camara():
-    # Debounce ajustado a 900ms para darle un respiro óptimo a Wokwi
     imagen_feed = camera_input_live(width=420, height=315, debounce=900)
     
     if imagen_feed:
-        st.image(imagen_feed, caption="Monitoreo del Comedero en Vivo", use_container_width=True)
-        
+        st.image(imagen_feed, caption="Monitoreo en Vivo", use_container_width=True)
         img_pil = Image.open(imagen_feed).convert("RGB")
         resultado, confianza = procesar_y_clasificar(img_pil)
         
-        # Muestra dinámicamente la barra de progreso
         st.write(f"Identificación actual de la IA: **{resultado}**")
-        st.progress(float(confianza), text=f"Nivel de confianza del modelo: {confianza*100:.2f}%")
+        st.progress(float(confianza), text=f"Confianza: {confianza*100:.2f}%")
         
-        # Filtro inicial por confianza (mínimo 75%)
         michi_detectado_ahora = resultado if confianza > 0.75 else "Nadie"
         
-        # LÓGICA DEL FILTRO DE ESTABILIDAD
         if michi_detectado_ahora == st.session_state.michi_candidato:
             st.session_state.contador_estabilidad += 1
         else:
             st.session_state.michi_candidato = michi_detectado_ahora
             st.session_state.contador_estabilidad = 0
             
-        # El michi debe mantenerse por lo menos 2 frames seguidos para enviar el MQTT
         if st.session_state.contador_estabilidad >= 2:
             if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
                 st.session_state.ultimo_michi_visto = michi_detectado_ahora
-                
-                # Payload exclusivo para cambiar el texto de la LCD
-                payload_pantalla = json.dumps({"Pantalla": michi_detectado_ahora})
-                try:
-                    client1.publish(TOPIC_DIGITAL, payload_pantalla, qos=1)
-                except Exception as e:
-                    st.error(f"Error al enviar datos de pantalla: {e}")
+                # Al cambiar el gato, refrescamos el estado enviando el paquete único
+                enviar_estado_sistema()
         
-        # Bloque de alertas corregido y limpio en base al estado de la sesión
         if st.session_state.ultimo_michi_visto != "Nadie":
             st.info(f"🚨 La IA detecta en la cámara a: **{st.session_state.ultimo_michi_visto}**")
         else:
@@ -124,11 +119,11 @@ def pipeline_camara():
 pipeline_camara()
 
 # -------------------------------------------------------------------------
-# 4. RECONOCIMIENTO DE COMANDOS DE VOZ (CONTROL ACTIVO DE SERVOS)
+# 4. RECONOCIMIENTO DE COMANDOS DE VOZ (CONTROL DE MOTORES)
 # -------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("🎙️ Control por Comando de Voz")
-st.write("Di comandos claros en español como: *'abrir coco'*, *'abre el plato de canela'* o *'cerrar comederos'*.")
+st.write("Di comandos como: *'abrir coco'*, *'abre el plato de canela'* o *'cerrar comederos'*.")
 
 audio_grabado = mic_recorder(
     start_prompt="Presiona para Hablar 🎤",
@@ -147,31 +142,35 @@ if audio_grabado:
             audio_data = recognizer.record(source)
             texto_detectado = recognizer.recognize_google(audio_data, language="es-ES")
             
-            st.write(f"Transcripción de voz obtenida: *\"{texto_detectado}\"*")
+            st.write(f"Transcripción: *\"{texto_detectado}\"*")
             comando_voz = texto_detectado.lower()
             
-            payload_motores = None
+            comando_valido = False
             
             if "coco" in comando_voz:
-                payload_motores = json.dumps({"Act1": "GATO_A"})
+                st.session_state.estado_motor_actual = "GATO_A"
                 st.success("Comando aceptado: Abriendo el plato de Coco 🐱")
+                comando_valido = True
                 
             elif "canela" in comando_voz:
-                payload_motores = json.dumps({"Act1": "GATO_B"})
+                st.session_state.estado_motor_actual = "GATO_B"
                 st.success("Comando aceptado: Abriendo el plato de Canela 🐱")
+                comando_valido = True
                 
             elif "cerrar" in comando_voz or "quitar" in comando_voz or "nadie" in comando_voz:
-                payload_motores = json.dumps({"Act1": "NADIE"})
+                st.session_state.estado_motor_actual = "NADIE"
                 st.error("Comando aceptado: Cerrando todos los comederos")
+                comando_valido = True
                 
             else:
-                st.warning("Comando no reconocido. Intenta diciendo claramente 'Coco' o 'Canela'.")
+                st.warning("Comando no reconocido. Di claramente 'Coco', 'Canela' o 'Cerrar'.")
             
-            if payload_motores:
-                client1.publish(TOPIC_DIGITAL, payload_motores)
-                st.toast(f"Mensaje de acción enviado a Wokwi: {payload_motores}", icon="📡")
+            # Si el comando de voz modificó el estado, enviamos la actualización completa de inmediato
+            if comando_valido:
+                enviar_estado_sistema()
+                st.toast("¡Comando enviado exitosamente a Wokwi!", icon="📡")
                 
     except sr.UnknownValueError:
-        st.error("El motor de voz no pudo entender el audio. Intenta hablar con mayor claridad.")
+        st.error("El motor de voz no pudo entender el audio.")
     except sr.RequestError as e:
-        st.error(f"Error con el servicio de voz de Google: {e}")
+        st.error(f"Error con el servicio de voz: {e}")
