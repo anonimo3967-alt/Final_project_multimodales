@@ -94,6 +94,7 @@ audio_grabado = mic_recorder(
     start_prompt="Presiona para Hablar 🎤",
     stop_prompt="Detener Grabación 🟥",
     just_once=True,
+    format="wav",
     key="grabador_voz"
 )
 
