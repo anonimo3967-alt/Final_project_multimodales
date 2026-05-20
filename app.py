@@ -30,7 +30,7 @@ def inicializar_recursos():
     try:
         # Intenta cargar tu modelo de Keras. Asegúrate de cambiar "model.keras" 
         # por el nombre exacto de tu archivo (por ejemplo, "keras_model.h5" o "model.h5")
-        modelo_keras = tf.keras.models.load_model("keras_model.h5")
+        modelo_keras = tf.keras.models.load_model("keras_model.h5", compile=false)
     except Exception as e:
         modelo_keras = None
         st.error(f"⚠️ Error al cargar el modelo de Keras. Verifica el nombre del archivo en tu GitHub. Detalle: {e}")
