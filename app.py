@@ -1,101 +1,116 @@
 import streamlit as st
-from camera_input_live import camera_input_live
+import paho.mqtt.client as mqtt
 from PIL import Image, ImageOps
 import numpy as np
-import tensorflow as tf
-import paho.mqtt.client as mqtt
-import json
-
-# LIBRERÍAS REQUERIDAS PARA EL CONTROL DE VOZ
+import tflite_runtime.interpreter as tflite
 from streamlit_mic_recorder import mic_recorder
 import speech_recognition as sr
 import io
-
-st.set_page_config(page_title="Comedero Inteligente Coco y Canela", layout="centered")
-st.title("🐱 Comedero Inteligente de Coco y Canela")
-st.write("Sistema unificado: Control síncrono por Voz e IA.")
+import json
 
 # -------------------------------------------------------------------------
-# 1. CONFIGURACIÓN MQTT Y CARGA DEL MODELO DE IA (CACHEADO)
+# CONTEXTO DEL PROYECTO: COMEDERO AUTOMATIZADO (COCO Y CANELA)
 # -------------------------------------------------------------------------
-BROKER_IP = "157.230.214.127"
-PORT = 1883
-TOPIC_DIGITAL = "cmqtt_sdesi"
-CLIENT_ID = "stream_client_michi_voice_99"
-
-@st.cache_resource
-def inicializar_recursos():
-    try:
-        modelo_keras = tf.keras.models.load_model('keras_model.h5', compile=False)
-    except Exception as e:
-        modelo_keras = None
-        st.error(f"Error crítico: No se pudo cargar 'keras_model.h5': {e}")
-        
-    cliente_mqtt = mqtt.Client(CLIENT_ID)
-    try:
-        cliente_mqtt.connect(BROKER_IP, PORT, 60)
-        cliente_mqtt.loop_start()
-    except Exception as e:
-        st.error(f"No se pudo conectar al Broker MQTT ({BROKER_IP}): {e}")
-        
-    return modelo_keras, cliente_mqtt
-
-model, client1 = inicializar_recursos()
+MQTT_BROKER = "broker.hivemq.com"
+MQTT_PORT = 1883
+TOPIC_TXT_ESP = "universidad/multimodal/esp32/control"  
+TOPIC_JSON_ST = "universidad/multimodal/streamlit/estado" 
+CLIENT_ID = "streamlit_michi_feeder_client"
 
 ETIQUETAS = ["Coco", "Canela", "Nadie"]
 
-# --- VARIABLES DE ESTADO UNIFICADAS ---
+st.set_page_config(page_title="Comedero Inteligente - Coco & Canela", page_icon="🐾", layout="centered")
+
+# -------------------------------------------------------------------------
+# 1. INICIALIZACIÓN DE RECURSOS GLOBALES (MQTT Y MODELO TFLITE)
+# -------------------------------------------------------------------------
+@st.cache_resource
+def inicializar_recursos():
+    # Carga optimizada y ligera usando TensorFlow Lite
+    try:
+        # IMPORTANTE: Asegúrate de descargar tu modelo en formato .tflite 
+        # desde Teachable Machine y subirlo a GitHub con el nombre "model.tflite"
+        interprete = tflite.Interpreter(model_path="model.tflite")
+        interprete.allocate_tensors()
+    except Exception as e:
+        interprete = None
+        st.error(f"⚠️ Error al cargar el modelo 'model.tflite'. Verifica que esté en el repositorio. Detalle: {e}")
+        
+    cliente_mqtt = mqtt.Client(client_id=CLIENT_ID)
+    
+    try:
+        cliente_mqtt.connect(MQTT_BROKER, MQTT_PORT, 60)
+        cliente_mqtt.loop_start()
+    except Exception as e:
+        st.error(f"⚠️ No se pudo conectar al servidor MQTT: {e}")
+        
+    return interprete, cliente_mqtt
+
+model, client = inicializar_recursos()
+
+# -------------------------------------------------------------------------
+# 2. GESTIÓN DEL ESTADO DE LA SESIÓN (SESSION STATE)
+# -------------------------------------------------------------------------
 if "ultimo_michi_visto" not in st.session_state:
     st.session_state.ultimo_michi_visto = "Nadie"
-if "contador_estabilidad" not in st.session_state:
-    st.session_state.contador_estabilidad = 0
 if "michi_candidato" not in st.session_state:
     st.session_state.michi_candidato = "Nadie"
-if "estado_motor_actual" not in st.session_state:
-    st.session_state.estado_motor_actual = "NADIE" # Estados: GATO_A, GATO_B, NADIE
+if "contador_estabilidad" not in st.session_state:
+    st.session_state.contador_estabilidad = 0
 
-# Función para enviar el estado global del sistema de forma segura
 def enviar_estado_sistema():
-    # Enviamos ambas variables juntas en un único paquete JSON
-    payload = json.dumps({
-        "Pantalla": st.session_state.ultimo_michi_visto,
-        "Act1": st.session_state.estado_motor_actual
-    })
+    payload = {
+        "michi_detectado": st.session_state.ultimo_michi_visto,
+        "accion_sugerida": "ABRIR" if st.session_state.ultimo_michi_visto != "Nadie" else "CERRAR"
+    }
     try:
-        client1.publish(TOPIC_DIGITAL, payload, qos=1)
+        client.publish(TOPIC_JSON_ST, json.dumps(payload), qos=1)
     except Exception as e:
-        st.error(f"Error al enviar datos: {e}")
+        print(f"Error al publicar en MQTT: {e}")
 
 # -------------------------------------------------------------------------
-# 2. PROCESAMIENTO MATEMÁTICO DE LA IMAGEN
+# 3. MÓDULO DE PROCESAMIENTO DE IMÁGENES (TFLITE)
 # -------------------------------------------------------------------------
 def procesar_y_clasificar(imagen_pil):
-    if model is None: 
+    if model is None:
         return "Nadie", 0.0
+        
     size = (224, 224)
     image = ImageOps.fit(imagen_pil, size, Image.Resampling.LANCZOS)
     image_array = np.asarray(image)
+    
     normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1.0
-    data = np.ndarray(shape=(1, 224, 224, 3), dtype=np.float32)
-    data[0] = normalized_image_array
-    prediction = model.predict(data, verbose=0)
-    index = np.argmax(prediction[0])
-    return ETIQUETAS[index], prediction[0][index]
+    input_data = np.expand_dims(normalized_image_array, axis=0)
+    
+    # Proceso de inferencia ligera para TFLite
+    detalles_entrada = model.get_input_details()
+    detalles_salida = model.get_output_details()
+    
+    model.set_tensor(detalles_entrada[0]['index'], input_data)
+    model.invoke()
+    prediccion = model.get_tensor(detalles_salida[0]['index'])
+    
+    indice_maximo = np.argmax(prediccion[0])
+    return ETIQUETAS[indice_maximo], prediccion[0][indice_maximo]
 
 # -------------------------------------------------------------------------
-# 3. PIPELINE DE LA CÁMARA (MONITOREO PASIVO)
+# 4. INTERFAZ GRÁFICA PRINCIPAL (UI / UX)
 # -------------------------------------------------------------------------
-@st.fragment
-def pipeline_camara():
-    imagen_feed = camera_input_live(width=420, height=315, debounce=900)
+st.title("🐾 Panel del Comedero Inteligente")
+st.write("Monitoreo visual mediante IA Ligera y control por voz para **Coco** y **Canela**.")
+
+pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial", "🎙️ Control por Voz"])
+
+with pestana_camara:
+    st.header("Monitoreo del Comedero en Vivo")
+    imagen_feed = st.camera_input("Enfoque la cámara hacia el plato del comedero")
     
     if imagen_feed:
-        st.image(imagen_feed, caption="Monitoreo en Vivo", use_container_width=True)
         img_pil = Image.open(imagen_feed).convert("RGB")
         resultado, confianza = procesar_y_clasificar(img_pil)
         
         st.write(f"Identificación actual de la IA: **{resultado}**")
-        st.progress(float(confianza), text=f"Confianza: {confianza*100:.2f}%")
+        st.progress(float(confianza), text=f"Nivel de confianza: {confianza * 100:.2f}%")
         
         michi_detectado_ahora = resultado if confianza > 0.75 else "Nadie"
         
@@ -108,69 +123,49 @@ def pipeline_camara():
         if st.session_state.contador_estabilidad >= 2:
             if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
                 st.session_state.ultimo_michi_visto = michi_detectado_ahora
-                # Al cambiar el gato, refrescamos el estado enviando el paquete único
                 enviar_estado_sistema()
         
         if st.session_state.ultimo_michi_visto != "Nadie":
-            st.info(f"🚨 La IA detecta en la cámara a: **{st.session_state.ultimo_michi_visto}**")
+            st.info(f"🚨 Servomotores accionados: Se abrió el compartimiento para **{st.session_state.ultimo_michi_visto}**.")
         else:
-            st.success("✨ Zona del comedero despejada.")
+            st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
 
-pipeline_camara()
-
-# -------------------------------------------------------------------------
-# 4. RECONOCIMIENTO DE COMANDOS DE VOZ (CONTROL DE MOTORES)
-# -------------------------------------------------------------------------
-st.markdown("---")
-st.subheader("🎙️ Control por Comando de Voz")
-st.write("Di comandos como: *'abrir coco'*, *'abre el plato de canela'* o *'cerrar comederos'*.")
-
-audio_grabado = mic_recorder(
-    start_prompt="Presiona para Hablar 🎤",
-    stop_prompt="Detener Grabación 🟥",
-    just_once=True,
-    format="wav", 
-    key="grabador_voz"
-)
-
-if audio_grabado:
-    audio_bytes = audio_grabado['bytes']
-    recognizer = sr.Recognizer()
+with pestana_voz:
+    st.header("Comandos de Voz del Sistema")
+    st.write("Presiona el botón para grabar un comando de voz (Ej: *'abrir plato'*, *'cerrar comedero'*).")
     
-    try:
-        with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
-            audio_data = recognizer.record(source)
-            texto_detectado = recognizer.recognize_google(audio_data, language="es-ES")
-            
-            st.write(f"Transcripción: *\"{texto_detectado}\"*")
-            comando_voz = texto_detectado.lower()
-            
-            comando_valido = False
-            
-            if "coco" in comando_voz:
-                st.session_state.estado_motor_actual = "GATO_A"
-                st.success("Comando aceptado: Abriendo el plato de Coco 🐱")
-                comando_valido = True
+    audio_grabado = mic_recorder(
+        start_prompt="🎙️ Iniciar grabación",
+        stop_prompt="🛑 Detener y procesar",
+        key="grabadora_michi",
+        format="wav"
+    )
+    
+    if audio_grabado:
+        bytes_audio = audio_grabado['bytes']
+        st.audio(bytes_audio, format="audio/wav")
+        
+        reconocedor = sr.Recognizer()
+        archivo_audio = io.BytesIO(bytes_audio)
+        
+        try:
+            with sr.AudioFile(archivo_audio) as origen:
+                datos_audio = reconocedor.record(origen)
+                texto_comando = reconocedor.recognize_google(datos_audio, language="es-ES").lower()
                 
-            elif "canela" in comando_voz:
-                st.session_state.estado_motor_actual = "GATO_B"
-                st.success("Comando aceptado: Abriendo el plato de Canela 🐱")
-                comando_valido = True
+                st.subheader("Texto interpretado:")
+                st.code(texto_comando)
                 
-            elif "cerrar" in comando_voz or "quitar" in comando_voz or "nadie" in comando_voz:
-                st.session_state.estado_motor_actual = "NADIE"
-                st.error("Comando aceptado: Cerrando todos los comederos")
-                comando_valido = True
-                
-            else:
-                st.warning("Comando no reconocido. Di claramente 'Coco', 'Canela' o 'Cerrar'.")
-            
-            # Si el comando de voz modificó el estado, enviamos la actualización completa de inmediato
-            if comando_valido:
-                enviar_estado_sistema()
-                st.toast("¡Comando enviado exitosamente a Wokwi!", icon="📡")
-                
-    except sr.UnknownValueError:
-        st.error("El motor de voz no pudo entender el audio.")
-    except sr.RequestError as e:
-        st.error(f"Error con el servicio de voz: {e}")
+                if "abrir" in texto_comando or "abre" in texto_comando:
+                    client.publish(TOPIC_TXT_ESP, "ABRIR", qos=1)
+                    st.success("🛰️ Comando enviado por MQTT: **ABRIR**.")
+                elif "cerrar" in texto_comando or "cierra" in texto_comando:
+                    client.publish(TOPIC_TXT_ESP, "CERRAR", qos=1)
+                    st.warning("🛰️ Comando enviado por MQTT: **CERRAR**.")
+                else:
+                    st.error("⚠️ Comando de voz no reconocido.")
+                    
+        except sr.UnknownValueError:
+            st.error("❌ No logramos entender el audio.")
+        except sr.RequestError as error_api:
+            st.error(f"❌ Error en el servicio de voz: {error_api}")
