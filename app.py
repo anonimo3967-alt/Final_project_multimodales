@@ -28,12 +28,12 @@ st.set_page_config(page_title="Comedero Inteligente - Coco & Canela", page_icon=
 @st.cache_resource
 def inicializar_recursos():
     try:
-        # Intenta cargar tu modelo de Keras. Asegúrate de cambiar "model.keras" 
-        # por el nombre exacto de tu archivo (por ejemplo, "keras_model.h5" o "model.h5")
-        modelo_keras = tf.keras.models.load_model("keras_model.h5", compile=False)
+        # Usamos la carga explícita heredada que sí tolera el argumento 'groups'
+        from tensorflow.keras.models import load_model
+        modelo_keras = load_model("keras_model.h5", compile=False)
     except Exception as e:
         modelo_keras = None
-        st.error(f"⚠️ Error al cargar el modelo de Keras. Verifica el nombre del archivo en tu GitHub. Detalle: {e}")
+        st.error(f"⚠️ Error al cargar el modelo de Keras... Detalle: {e}")
         
     cliente_mqtt = mqtt.Client(client_id=CLIENT_ID)
     try:
