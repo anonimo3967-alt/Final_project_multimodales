@@ -1,8 +1,8 @@
 streamlit
 camera_input_live
 pillow
-numpy
-tensorflow
+numpy<2.0.0
+tensorflow-cpu
 paho-mqtt
 streamlit_mic_recorder
 SpeechRecognition
