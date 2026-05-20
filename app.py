@@ -7,7 +7,7 @@ from streamlit_mic_recorder import mic_recorder
 import speech_recognition as sr
 import io
 import json
-import time
+import base64
 
 # -------------------------------------------------------------------------
 # CONTEXTO DEL PROYECTO: COMEDERO AUTOMATIZADO (COCO Y CANELA)
@@ -29,17 +29,18 @@ st.set_page_config(page_title="Comedero Inteligente - Coco & Canela", page_icon=
 def inicializar_recursos():
     try:
         from tensorflow.keras.models import load_model
+        # Asegúrate de que el archivo se llame exactamente "keras_model.h5" en tu GitHub
         modelo_keras = load_model("keras_model.h5", compile=False)
     except Exception as e:
         modelo_keras = None
-        st.error(f"⚠️ Error al cargar el modelo 'keras_model.h5': {e}")
+        st.error(f"⚠️ Error al cargar el modelo 'keras_model.h5'. Verifica tu repositorio. Detalle: {e}")
         
     cliente_mqtt = mqtt.Client(client_id=CLIENT_ID)
     try:
         cliente_mqtt.connect(MQTT_BROKER, MQTT_PORT, 60)
         cliente_mqtt.loop_start()
     except Exception as e:
-        st.error(f"⚠️ Error de conexión al Broker MQTT: {e}")
+        st.error(f"⚠️ Error MQTT: {e}")
         
     return modelo_keras, cliente_mqtt
 
@@ -63,7 +64,7 @@ def enviar_estado_sistema():
     try:
         client.publish(TOPIC_JSON_ST, json.dumps(payload), qos=1)
     except Exception as e:
-        print(f"Error MQTT al publicar estado: {e}")
+        print(f"Error MQTT: {e}")
 
 # -------------------------------------------------------------------------
 # 3. MÓDULO DE PROCESAMIENTO DE IMÁGENES (TENSORFLOW / KERAS)
@@ -80,6 +81,7 @@ def procesar_y_clasificar(imagen_pil):
     normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1.0
     input_data = np.expand_dims(normalized_image_array, axis=0)
     
+    # Inferencia con Keras
     prediccion = model.predict(input_data, verbose=0)
     indice_maximo = np.argmax(prediccion[0])
     
@@ -97,18 +99,23 @@ pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial Auto", "🎙️ 
 with pestana_camara:
     st.header("Cámara del Comedero en Tiempo Real")
     
+    # Marcadores dinámicos arriba del video
     contenedor_metricas = st.empty()
     contenedor_alertas = st.empty()
 
-    # Encapsulamos la cámara dentro de un fragmento con un retraso controlado para que no sature la CPU
-    @st.fragment
-    def renderizar_camara_inteligente():
-        # Componente oficial e inbloqueable de Streamlit para capturar video/fotos
-        foto_capturada = st.camera_input("Enfoque hacia el plato de comida", label_visibility="visible")
-
-        if foto_capturada:
+    # -------------------------------------------------------------------------
+    # EL HUB DE COMUNICACIÓN (Ahora visible para depuración)
+    # -------------------------------------------------------------------------
+    # Definimos la función que Python ejecutará cuando el hub cambie de valor
+    # Esto ocurre automáticamente cuando JavaScript le entrega un frame
+    def procesar_cuadro_camara():
+        captura_base64 = st.session_state.hub_comunicacion
+        
+        if captura_base64 and "base64," in captura_base64:
             try:
-                bytes_imagen = foto_capturada.getvalue()
+                # Decodificar la imagen Base64 a bytes y Pillow
+                datos_limpios = captura_base64.split("base64,")[1].strip().replace(" ", "+")
+                bytes_imagen = base64.b64decode(datos_limpios)
                 img_pil = Image.open(io.BytesIO(bytes_imagen)).convert("RGB")
                 
                 # Ejecutar inferencia de la IA
@@ -116,12 +123,13 @@ with pestana_camara:
                 
                 with contenedor_metricas.container():
                     st.metric(
-                        label="🐾 Identificación actual de la IA:", 
+                        label="🐾 Identificación de la IA:", 
                         value=resultado, 
                         delta=f"Confianza: {confianza * 100:.1f}%"
                     )
                     st.progress(confianza)
                 
+                # Filtro lógico de estabilidad contra falsos positivos
                 michi_detectado_ahora = resultado if confianza > 0.70 else "Nadie"
                 
                 if michi_detectado_ahora == st.session_state.michi_candidato:
@@ -130,7 +138,7 @@ with pestana_camara:
                     st.session_state.michi_candidato = michi_detectado_ahora
                     st.session_state.contador_estabilidad = 0
                     
-                if st.session_state.contador_estabilidad >= 1: 
+                if st.session_state.contador_estabilidad >= 2:
                     if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
                         st.session_state.ultimo_michi_visto = michi_detectado_ahora
                         enviar_estado_sistema()
@@ -140,19 +148,74 @@ with pestana_camara:
                         st.info(f"🚨 Servomotores en Wokwi ordenados para abrir el plato de **{st.session_state.ultimo_michi_visto}**.")
                     else:
                         st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
-                    
-            except Exception as error_decode:
-                st.error(f"⚠️ Error procesando la imagen en el modelo: {error_decode}")
+                        
+            except Exception as e:
+                st.error(f"Error procesando el cuadro: {e}")
         else:
             with contenedor_metricas.container():
-                st.info("Activa tu cámara arriba para iniciar el reconocimiento automático de la IA.")
+                st.info("Esperando flujo continuo desde el navegador... (Concede permisos de cámara)")
 
-        # Añadimos una pausa controlada de 2 segundos para darle un respiro al servidor
-        time.sleep(2)
-        st.rerun()
+    # Definimos el input oculto que actúa como receptor síncrono del video
+    # Al ponerle 'on_change', obligamos a Streamlit a refrescar la app cada vez que llega un cuadro
+    st.text_input(
+        "transfer_frame_bridge", 
+        key="hub_comunicacion", 
+        on_change=procesar_cuadro_camara, 
+        label_visibility="collapsed"
+    )
 
-    # Ejecutamos el fragmento de la cámara
-    renderizar_camara_inteligente()
+    # INYECCIÓN DE COMPONENTE WEB JAVASCRIPT: Captura frames de la webcam nativa del navegador
+    st.components.v1.html(
+        """
+        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: sans-serif;">
+            <video id="webcam" autoplay playsinline width="380" height="285" style="border-radius: 10px; background-color: #222; transform: scaleX(-1);"></video>
+            <canvas id="canvas_oculto" width="224" height="224" style="display:none;"></canvas>
+            <p style="color: #4CAF50; font-size: 13px; margin-top: 5px;">● Transmisión de Video en Vivo Activa🟢</p>
+        </div>
+        
+        <script>
+            const video = document.getElementById('webcam');
+            const canvas = document.getElementById('canvas_oculto');
+            const ctx = canvas.getContext('2d');
+            
+            navigator.mediaDevices.getUserMedia({ video: { width: 380, height: 285 } })
+                .then((stream) => { 
+                    video.srcObject = stream; 
+                })
+                .catch((err) => { 
+                    console.error("Error webcam: ", err); 
+                });
+                
+            setInterval(() => {
+                if(video.videoWidth > 0) {
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    // Captura comprimida al 50% para no ahogar la red
+                    const dataURL = canvas.toDataURL('image/jpeg', 0.5); 
+                    
+                    // Buscamos el input del puente de Streamlit
+                    const doc = window.parent.document;
+                    const inputs = doc.querySelectorAll('input');
+                    let streamLitInput = null;
+                    
+                    for (let input of inputs) {
+                        if (input.getAttribute('aria-label') === 'transfer_frame_bridge') {
+                            streamLitInput = input;
+                            break;
+                        }
+                    }
+                    
+                    // Si encontramos el input, inyectamos el valor y simulamos un cambio humano para despertar a Python
+                    if (streamLitInput) {
+                        streamLitInput.value = dataURL;
+                        streamLitInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        streamLitInput.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }
+            }, 1000); // 1 segundo entre capturas
+        </script>
+        """,
+        height=330
+    )
 
 # --- PESTAÑA B: INTERFAZ DE CONTROL POR VOZ ---
 with pestana_voz:
@@ -175,7 +238,7 @@ with pestana_voz:
         
         try:
             with sr.AudioFile(archivo_audio) as origen:
-                datos_audio = reconocedor.record(origen)
+                datos_audio = reconceptual = reconocedor.record(origen)
                 texto_comando = reconocedor.recognize_google(datos_audio, language="es-ES").lower()
                 
                 st.subheader("Texto interpretado:")
