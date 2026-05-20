@@ -5,9 +5,9 @@ import numpy as np
 import tensorflow as tf
 from streamlit_mic_recorder import mic_recorder
 import speech_recognition as sr
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 import io
 import json
+import base64
 
 # -------------------------------------------------------------------------
 # CONTEXTO DEL PROYECTO: COMEDERO AUTOMATIZADO (COCO Y CANELA)
@@ -29,18 +29,17 @@ st.set_page_config(page_title="Comedero Inteligente - Coco & Canela", page_icon=
 def inicializar_recursos():
     try:
         from tensorflow.keras.models import load_model
-        # Carga del modelo omitiendo compilación estricta de Keras 3
         modelo_keras = load_model("keras_model.h5", compile=False)
     except Exception as e:
         modelo_keras = None
-        st.error(f"⚠️ Error al cargar el modelo 'keras_model.h5'. Detalle: {e}")
+        st.error(f"⚠️ Error al cargar el modelo 'keras_model.h5': {e}")
         
     cliente_mqtt = mqtt.Client(client_id=CLIENT_ID)
     try:
         cliente_mqtt.connect(MQTT_BROKER, MQTT_PORT, 60)
         cliente_mqtt.loop_start()
     except Exception as e:
-        st.error(f"⚠️ Error MQTT: {e}")
+        st.error(f"⚠️ Error de conexión al Broker MQTT: {e}")
         
     return modelo_keras, cliente_mqtt
 
@@ -64,80 +63,130 @@ def enviar_estado_sistema():
     try:
         client.publish(TOPIC_JSON_ST, json.dumps(payload), qos=1)
     except Exception as e:
-        print(f"Error MQTT: {e}")
+        print(f"Error MQTT al publicar estado: {e}")
 
 # -------------------------------------------------------------------------
-# 3. INTERFAZ GRÁFICA PRINCIPAL (UI / UX)
+# 3. MÓDULO DE PROCESAMIENTO DE IMÁGENES (TENSORFLOW / KERAS)
+# -------------------------------------------------------------------------
+def procesar_y_clasificar(imagen_pil):
+    if model is None:
+        return "Nadie", 0.0
+        
+    size = (224, 224)
+    image = ImageOps.fit(imagen_pil, size, Image.Resampling.LANCZOS)
+    image_array = np.asarray(image)
+    
+    # Normalización idéntica a Teachable Machine
+    normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1.0
+    input_data = np.expand_dims(normalized_image_array, axis=0)
+    
+    prediccion = model.predict(input_data, verbose=0)
+    indice_maximo = np.argmax(prediccion[0])
+    
+    return ETIQUETAS[indice_maximo], float(prediccion[0][indice_maximo])
+
+# -------------------------------------------------------------------------
+# 4. INTERFAZ GRÁFICA PRINCIPAL (UI / UX)
 # -------------------------------------------------------------------------
 st.title("🐾 Panel del Comedero Inteligente")
 st.write("Monitoreo automático asistido por TensorFlow / Keras y control de voz adaptativo.")
 
 pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial Auto", "🎙️ Control por Voz"])
 
-# --- PESTAÑA A: CÁMARA AUTOMÁTICA EN TIEMPO REAL (NATIVA CON WEBRTC) ---
+# --- PESTAÑA A: CÁMARA AUTOMÁTICA EN TIEMPO REAL ---
 with pestana_camara:
     st.header("Video del Comedero en Tiempo Real")
     
     contenedor_metricas = st.empty()
     contenedor_alertas = st.empty()
 
-    # Mostramos el estado actual del sistema en la parte superior
-    with contenedor_metricas.container():
-        st.metric(label="🐾 Última Identificación de la IA:", value=st.session_state.ultimo_michi_visto)
-        if st.session_state.ultimo_michi_visto != "Nadie":
-            st.info(f"🚨 Servomotores ordenados para abrir el plato de **{st.session_state.ultimo_michi_visto}**.")
-        else:
-            st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
-
-    # Clase encargada de procesar los frames de video directamente desde la WebRTC nativa
-    class AnalizadorMichis(VideoTransformerBase):
-        def transform(self, frame):
-            # Convertimos el frame nativo a una imagen de Pillow
-            img = frame.to_ndarray(format="bgr24")
-            img_rgb = Image.fromarray(img)
+    # Recibimos de forma nativa el frame desde el componente HTML embebido
+    ctx_javascript = st.components.v1.html(
+        """
+        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: sans-serif;">
+            <video id="webcam" autoplay playsinline width="380" height="285" style="border-radius: 10px; background-color: #222; transform: scaleX(-1);"></video>
+            <canvas id="canvas_oculto" width="224" height="224" style="display:none;"></canvas>
+            <p style="color: #4CAF50; font-size: 13px; margin-top: 8px; font-weight: bold;">● Transmisión de Video Local Activa 🟢</p>
+        </div>
+        
+        <script>
+            const video = document.getElementById('webcam');
+            const canvas = document.getElementById('canvas_oculto');
+            const ctx = canvas.getContext('2d');
             
-            if model is not None:
-                try:
-                    # Ajuste dimensional exacto para Teachable Machine (224x224 RGB)
-                    size = (224, 224)
-                    image = ImageOps.fit(img_rgb, size, Image.Resampling.LANCZOS)
-                    image_array = np.asarray(image)
+            // Solicitar acceso a la cámara local de forma directa
+            navigator.mediaDevices.getUserMedia({ video: { width: 380, height: 285 } })
+                .then((stream) => { 
+                    video.srcObject = stream; 
+                })
+                .catch((err) => { 
+                    console.error("Error al abrir la cámara web: ", err); 
+                });
+                
+            // Captura periódica de cuadros enviada directamente al backend de Python
+            setInterval(() => {
+                if(video.videoWidth > 0) {
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    // Extraer string base64 limpio de baja resolución para optimizar la red
+                    const dataURL = canvas.toDataURL('image/jpeg', 0.4); 
                     
-                    # Normalización idéntica al entrenamiento
-                    normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1.0
-                    input_data = np.expand_dims(normalized_image_array, axis=0)
-                    
-                    # Inferencia
-                    prediccion = model.predict(input_data, verbose=0)
-                    indice_maximo = np.argmax(prediccion[0])
-                    resultado = ETIQUETAS[indice_maximo]
-                    confianza = float(prediccion[0][indice_maximo])
-                    
-                    # Lógica de estabilidad para el envío MQTT
-                    michi_detectado_ahora = resultado if confianza > 0.75 else "Nadie"
-                    
-                    if michi_detectado_ahora == st.session_state.michi_candidato:
-                        st.session_state.contador_estabilidad += 1
-                    else:
-                        st.session_state.michi_candidato = michi_detectado_ahora
-                        st.session_state.contador_estabilidad = 0
-                        
-                    if st.session_state.contador_estabilidad >= 5: # 5 cuadros estables
-                        if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
-                            st.session_state.ultimo_michi_visto = michi_detectado_ahora
-                            enviar_estado_sistema()
-                except Exception as e:
-                    print(f"Error en inferencia: {e}")
-            
-            # Devolvemos el frame modificado o igual para que se pinte en pantalla (añadimos efecto espejo)
-            return np.flip(img, axis=1)
-
-    # Invocamos el streamer oficial WebRTC de Streamlit
-    webrtc_streamer(
-        key="michi-streamer", 
-        video_transformer_factory=AnalizadorMichis,
-        media_stream_constraints={"video": True, "audio": False}
+                    // Enviar los datos directamente a Python usando la API de Streamlit sin pasar por inputs visibles
+                    window.parent.postMessage({
+                        type: 'streamlit:setComponentValue',
+                        value: dataURL
+                    }, '*');
+                }
+            }, 1000); // 1 frame por segundo exacto
+        </script>
+        """,
+        height=330
     )
+
+    # Procesar la imagen devuelta por el componente HTML
+    captura_base64 = ctx_javascript
+    
+    if captura_base64 and "base64," in captura_base64:
+        try:
+            datos_limpios = captura_base64.split("base64,")[1].strip().replace(" ", "+")
+            bytes_imagen = base64.b64decode(datos_limpios)
+            img_pil = Image.open(io.BytesIO(bytes_imagen)).convert("RGB")
+            
+            # Ejecutar inferencia de la IA
+            resultado, confianza = procesar_y_clasificar(img_pil)
+            
+            with contenedor_metricas.container():
+                st.metric(
+                    label="🐾 Identificación actual de la IA:", 
+                    value=resultado, 
+                    delta=f"Confianza: {confianza * 100:.1f}%"
+                )
+                st.progress(confianza)
+            
+            # Filtro de estabilidad lógica para evitar falsos positivos
+            michi_detectado_ahora = resultado if confianza > 0.70 else "Nadie"
+            
+            if michi_detectado_ahora == st.session_state.michi_candidato:
+                st.session_state.contador_estabilidad += 1
+            else:
+                st.session_state.michi_candidato = michi_detectado_ahora
+                st.session_state.contador_estabilidad = 0
+                
+            if st.session_state.contador_estabilidad >= 2:
+                if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
+                    st.session_state.ultimo_michi_visto = michi_detectado_ahora
+                    enviar_estado_sistema()
+            
+            with contenedor_alertas.container():
+                if st.session_state.ultimo_michi_visto != "Nadie":
+                    st.info(f"🚨 Servomotores en Wokwi ordenados para abrir el plato de **{st.session_state.ultimo_michi_visto}**.")
+                else:
+                    st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
+                
+        except Exception as error_decode:
+            st.error(f"⚠️ Error procesando la imagen en el modelo: {error_decode}")
+    else:
+        with contenedor_metricas.container():
+            st.info("Esperando flujo de video continuo desde el navegador...")
 
 # --- PESTAÑA B: INTERFAZ DE CONTROL POR VOZ ---
 with pestana_voz:
@@ -160,7 +209,7 @@ with pestana_voz:
         
         try:
             with sr.AudioFile(archivo_audio) as origen:
-                datos_audio = reconnaissace = reconocedor.record(origen)
+                datos_audio = reconocedor.record(origen)
                 texto_comando = reconocedor.recognize_google(datos_audio, language="es-ES").lower()
                 
                 st.subheader("Texto interpretado:")
