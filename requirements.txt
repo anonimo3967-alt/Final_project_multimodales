@@ -1,5 +1,4 @@
 streamlit
-camera_input_live
 pillow
 numpy==1.26.4
 tflite-runtime
