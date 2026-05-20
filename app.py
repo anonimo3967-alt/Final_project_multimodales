@@ -1,259 +1,176 @@
 import streamlit as st
-import paho.mqtt.client as mqtt
+from camera_input_live import camera_input_live
 from PIL import Image, ImageOps
 import numpy as np
 import tensorflow as tf
+import paho.mqtt.client as mqtt
+import json
+
+# LIBRERÍAS REQUERIDAS PARA EL CONTROL DE VOZ
 from streamlit_mic_recorder import mic_recorder
 import speech_recognition as sr
 import io
-import json
-import base64
+
+st.set_page_config(page_title="Comedero Inteligente Coco y Canela", layout="centered")
+st.title("🐱 Comedero Inteligente de Coco y Canela")
+st.write("Sistema unificado: Control síncrono por Voz e IA.")
 
 # -------------------------------------------------------------------------
-# CONTEXTO DEL PROYECTO: COMEDERO AUTOMATIZADO (COCO Y CANELA)
+# 1. CONFIGURACIÓN MQTT Y CARGA DEL MODELO DE IA (CACHEADO)
 # -------------------------------------------------------------------------
-MQTT_BROKER = "broker.hivemq.com"
-MQTT_PORT = 1883
-TOPIC_TXT_ESP = "universidad/multimodal/esp32/control"  
-TOPIC_JSON_ST = "universidad/multimodal/streamlit/estado" 
-CLIENT_ID = "streamlit_michi_feeder_client"
+BROKER_IP = "157.230.214.127"
+PORT = 1883
+TOPIC_DIGITAL = "cmqtt_sdesi"
+CLIENT_ID = "stream_client_michi_voice_99"
 
-ETIQUETAS = ["Coco", "Canela", "Nadie"]
-
-st.set_page_config(page_title="Comedero Inteligente - Coco & Canela", page_icon="🐾", layout="centered")
-
-# -------------------------------------------------------------------------
-# 1. INICIALIZACIÓN DE RECURSOS GLOBALES (MQTT Y MODELO TENSORFLOW / KERAS)
-# -------------------------------------------------------------------------
 @st.cache_resource
 def inicializar_recursos():
     try:
-        from tensorflow.keras.models import load_model
-        # Asegúrate de que el archivo se llame exactamente "keras_model.h5" en tu GitHub
-        modelo_keras = load_model("keras_model.h5", compile=False)
+        modelo_keras = tf.keras.models.load_model('keras_model.h5', compile=False)
     except Exception as e:
         modelo_keras = None
-        st.error(f"⚠️ Error al cargar el modelo 'keras_model.h5'. Verifica tu repositorio. Detalle: {e}")
+        st.error(f"Error crítico: No se pudo cargar 'keras_model.h5': {e}")
         
-    cliente_mqtt = mqtt.Client(client_id=CLIENT_ID)
+    cliente_mqtt = mqtt.Client(CLIENT_ID)
     try:
-        cliente_mqtt.connect(MQTT_BROKER, MQTT_PORT, 60)
+        cliente_mqtt.connect(BROKER_IP, PORT, 60)
         cliente_mqtt.loop_start()
     except Exception as e:
-        st.error(f"⚠️ Error MQTT: {e}")
+        st.error(f"No se pudo conectar al Broker MQTT ({BROKER_IP}): {e}")
         
     return modelo_keras, cliente_mqtt
 
-model, client = inicializar_recursos()
+model, client1 = inicializar_recursos()
 
-# -------------------------------------------------------------------------
-# 2. GESTIÓN DEL ESTADO DE LA SESIÓN (SESSION STATE)
-# -------------------------------------------------------------------------
+ETIQUETAS = ["Coco", "Canela", "Nadie"]
+
+# --- VARIABLES DE ESTADO UNIFICADAS ---
 if "ultimo_michi_visto" not in st.session_state:
     st.session_state.ultimo_michi_visto = "Nadie"
-if "michi_candidato" not in st.session_state:
-    st.session_state.michi_candidato = "Nadie"
 if "contador_estabilidad" not in st.session_state:
     st.session_state.contador_estabilidad = 0
+if "michi_candidato" not in st.session_state:
+    st.session_state.michi_candidato = "Nadie"
+if "estado_motor_actual" not in st.session_state:
+    st.session_state.estado_motor_actual = "NADIE" # Estados: GATO_A, GATO_B, NADIE
 
+# Función para enviar el estado global del sistema de forma segura
 def enviar_estado_sistema():
-    payload = {
-        "michi_detectado": st.session_state.ultimo_michi_visto,
-        "accion_sugerida": "ABRIR" if st.session_state.ultimo_michi_visto != "Nadie" else "CERRAR"
-    }
+    # Enviamos ambas variables juntas en un único paquete JSON
+    payload = json.dumps({
+        "Pantalla": st.session_state.ultimo_michi_visto,
+        "Act1": st.session_state.estado_motor_actual
+    })
     try:
-        client.publish(TOPIC_JSON_ST, json.dumps(payload), qos=1)
+        client1.publish(TOPIC_DIGITAL, payload, qos=1)
     except Exception as e:
-        print(f"Error MQTT: {e}")
+        st.error(f"Error al enviar datos: {e}")
 
 # -------------------------------------------------------------------------
-# 3. MÓDULO DE PROCESAMIENTO DE IMÁGENES (TENSORFLOW / KERAS)
+# 2. PROCESAMIENTO MATEMÁTICO DE LA IMAGEN
 # -------------------------------------------------------------------------
 def procesar_y_clasificar(imagen_pil):
-    if model is None:
+    if model is None: 
         return "Nadie", 0.0
-        
     size = (224, 224)
     image = ImageOps.fit(imagen_pil, size, Image.Resampling.LANCZOS)
     image_array = np.asarray(image)
-    
-    # Normalización idéntica a Teachable Machine
     normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1.0
-    input_data = np.expand_dims(normalized_image_array, axis=0)
-    
-    # Inferencia con Keras
-    prediccion = model.predict(input_data, verbose=0)
-    indice_maximo = np.argmax(prediccion[0])
-    
-    return ETIQUETAS[indice_maximo], float(prediccion[0][indice_maximo])
+    data = np.ndarray(shape=(1, 224, 224, 3), dtype=np.float32)
+    data[0] = normalized_image_array
+    prediction = model.predict(data, verbose=0)
+    index = np.argmax(prediction[0])
+    return ETIQUETAS[index], prediction[0][index]
 
 # -------------------------------------------------------------------------
-# 4. INTERFAZ GRÁFICA PRINCIPAL (UI / UX)
+# 3. PIPELINE DE LA CÁMARA (MONITOREO PASIVO)
 # -------------------------------------------------------------------------
-st.title("🐾 Panel del Comedero Inteligente")
-st.write("Monitoreo automático asistido por TensorFlow / Keras y control de voz adaptativo.")
-
-pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial Auto", "🎙️ Control por Voz"])
-
-# --- PESTAÑA A: CÁMARA AUTOMÁTICA EN TIEMPO REAL (ZONA CONTROLADA) ---
-with pestana_camara:
-    st.header("Cámara del Comedero en Tiempo Real")
+@st.fragment
+def pipeline_camara():
+    imagen_feed = camera_input_live(width=420, height=315, debounce=900)
     
-    # Marcadores dinámicos arriba del video
-    contenedor_metricas = st.empty()
-    contenedor_alertas = st.empty()
-
-    # -------------------------------------------------------------------------
-    # EL HUB DE COMUNICACIÓN (Ahora visible para depuración)
-    # -------------------------------------------------------------------------
-    # Definimos la función que Python ejecutará cuando el hub cambie de valor
-    # Esto ocurre automáticamente cuando JavaScript le entrega un frame
-    def procesar_cuadro_camara():
-        captura_base64 = st.session_state.hub_comunicacion
+    if imagen_feed:
+        st.image(imagen_feed, caption="Monitoreo en Vivo", use_container_width=True)
+        img_pil = Image.open(imagen_feed).convert("RGB")
+        resultado, confianza = procesar_y_clasificar(img_pil)
         
-        if captura_base64 and "base64," in captura_base64:
-            try:
-                # Decodificar la imagen Base64 a bytes y Pillow
-                datos_limpios = captura_base64.split("base64,")[1].strip().replace(" ", "+")
-                bytes_imagen = base64.b64decode(datos_limpios)
-                img_pil = Image.open(io.BytesIO(bytes_imagen)).convert("RGB")
-                
-                # Ejecutar inferencia de la IA
-                resultado, confianza = procesar_y_clasificar(img_pil)
-                
-                with contenedor_metricas.container():
-                    st.metric(
-                        label="🐾 Identificación de la IA:", 
-                        value=resultado, 
-                        delta=f"Confianza: {confianza * 100:.1f}%"
-                    )
-                    st.progress(confianza)
-                
-                # Filtro lógico de estabilidad contra falsos positivos
-                michi_detectado_ahora = resultado if confianza > 0.70 else "Nadie"
-                
-                if michi_detectado_ahora == st.session_state.michi_candidato:
-                    st.session_state.contador_estabilidad += 1
-                else:
-                    st.session_state.michi_candidato = michi_detectado_ahora
-                    st.session_state.contador_estabilidad = 0
-                    
-                if st.session_state.contador_estabilidad >= 2:
-                    if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
-                        st.session_state.ultimo_michi_visto = michi_detectado_ahora
-                        enviar_estado_sistema()
-                
-                with contenedor_alertas.container():
-                    if st.session_state.ultimo_michi_visto != "Nadie":
-                        st.info(f"🚨 Servomotores en Wokwi ordenados para abrir el plato de **{st.session_state.ultimo_michi_visto}**.")
-                    else:
-                        st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
-                        
-            except Exception as e:
-                st.error(f"Error procesando el cuadro: {e}")
+        st.write(f"Identificación actual de la IA: **{resultado}**")
+        st.progress(float(confianza), text=f"Confianza: {confianza*100:.2f}%")
+        
+        michi_detectado_ahora = resultado if confianza > 0.75 else "Nadie"
+        
+        if michi_detectado_ahora == st.session_state.michi_candidato:
+            st.session_state.contador_estabilidad += 1
         else:
-            with contenedor_metricas.container():
-                st.info("Esperando flujo continuo desde el navegador... (Concede permisos de cámara)")
-
-    # Definimos el input oculto que actúa como receptor síncrono del video
-    # Al ponerle 'on_change', obligamos a Streamlit a refrescar la app cada vez que llega un cuadro
-    st.text_input(
-        "transfer_frame_bridge", 
-        key="hub_comunicacion", 
-        on_change=procesar_cuadro_camara, 
-        label_visibility="collapsed"
-    )
-
-    # INYECCIÓN DE COMPONENTE WEB JAVASCRIPT: Captura frames de la webcam nativa del navegador
-    st.components.v1.html(
-        """
-        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: sans-serif;">
-            <video id="webcam" autoplay playsinline width="380" height="285" style="border-radius: 10px; background-color: #222; transform: scaleX(-1);"></video>
-            <canvas id="canvas_oculto" width="224" height="224" style="display:none;"></canvas>
-            <p style="color: #4CAF50; font-size: 13px; margin-top: 5px;">● Transmisión de Video en Vivo Activa🟢</p>
-        </div>
-        
-        <script>
-            const video = document.getElementById('webcam');
-            const canvas = document.getElementById('canvas_oculto');
-            const ctx = canvas.getContext('2d');
+            st.session_state.michi_candidato = michi_detectado_ahora
+            st.session_state.contador_estabilidad = 0
             
-            navigator.mediaDevices.getUserMedia({ video: { width: 380, height: 285 } })
-                .then((stream) => { 
-                    video.srcObject = stream; 
-                })
-                .catch((err) => { 
-                    console.error("Error webcam: ", err); 
-                });
-                
-            setInterval(() => {
-                if(video.videoWidth > 0) {
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    // Captura comprimida al 50% para no ahogar la red
-                    const dataURL = canvas.toDataURL('image/jpeg', 0.5); 
-                    
-                    // Buscamos el input del puente de Streamlit
-                    const doc = window.parent.document;
-                    const inputs = doc.querySelectorAll('input');
-                    let streamLitInput = null;
-                    
-                    for (let input of inputs) {
-                        if (input.getAttribute('aria-label') === 'transfer_frame_bridge') {
-                            streamLitInput = input;
-                            break;
-                        }
-                    }
-                    
-                    // Si encontramos el input, inyectamos el valor y simulamos un cambio humano para despertar a Python
-                    if (streamLitInput) {
-                        streamLitInput.value = dataURL;
-                        streamLitInput.dispatchEvent(new Event('input', { bubbles: true }));
-                        streamLitInput.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                }
-            }, 1000); // 1 segundo entre capturas
-        </script>
-        """,
-        height=330
-    )
+        if st.session_state.contador_estabilidad >= 2:
+            if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
+                st.session_state.ultimo_michi_visto = michi_detectado_ahora
+                # Al cambiar el gato, refrescamos el estado enviando el paquete único
+                enviar_estado_sistema()
+        
+        if st.session_state.ultimo_michi_visto != "Nadie":
+            st.info(f"🚨 La IA detecta en la cámara a: **{st.session_state.ultimo_michi_visto}**")
+        else:
+            st.success("✨ Zona del comedero despejada.")
 
-# --- PESTAÑA B: INTERFAZ DE CONTROL POR VOZ ---
-with pestana_voz:
-    st.header("Comandos de Voz del Sistema")
-    st.write("Presiona el botón para grabar un comando de voz directo hacia los servomotores (Ej: *'abrir plato'*, *'cerrar comedero'*).")
+pipeline_camara()
+
+# -------------------------------------------------------------------------
+# 4. RECONOCIMIENTO DE COMANDOS DE VOZ (CONTROL DE MOTORES)
+# -------------------------------------------------------------------------
+st.markdown("---")
+st.subheader("🎙️ Control por Comando de Voz")
+st.write("Di comandos como: *'abrir coco'*, *'abre el plato de canela'* o *'cerrar comederos'*.")
+
+audio_grabado = mic_recorder(
+    start_prompt="Presiona para Hablar 🎤",
+    stop_prompt="Detener Grabación 🟥",
+    just_once=True,
+    format="wav", 
+    key="grabador_voz"
+)
+
+if audio_grabado:
+    audio_bytes = audio_grabado['bytes']
+    recognizer = sr.Recognizer()
     
-    audio_grabado = mic_recorder(
-        start_prompt="🎙️ Iniciar grabación",
-        stop_prompt="🛑 Detener y procesar",
-        key="grabadora_michi",
-        format="wav"
-    )
-    
-    if audio_grabado:
-        bytes_audio = audio_grabado['bytes']
-        st.audio(bytes_audio, format="audio/wav")
-        
-        reconocedor = sr.Recognizer()
-        archivo_audio = io.BytesIO(bytes_audio)
-        
-        try:
-            with sr.AudioFile(archivo_audio) as origen:
-                datos_audio = reconceptual = reconocedor.record(origen)
-                texto_comando = reconocedor.recognize_google(datos_audio, language="es-ES").lower()
+    try:
+        with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
+            audio_data = recognizer.record(source)
+            texto_detectado = recognizer.recognize_google(audio_data, language="es-ES")
+            
+            st.write(f"Transcripción: *\"{texto_detectado}\"*")
+            comando_voz = texto_detectado.lower()
+            
+            comando_valido = False
+            
+            if "coco" in comando_voz:
+                st.session_state.estado_motor_actual = "GATO_A"
+                st.success("Comando aceptado: Abriendo el plato de Coco 🐱")
+                comando_valido = True
                 
-                st.subheader("Texto interpretado:")
-                st.code(texto_comando)
+            elif "canela" in comando_voz:
+                st.session_state.estado_motor_actual = "GATO_B"
+                st.success("Comando aceptado: Abriendo el plato de Canela 🐱")
+                comando_valido = True
                 
-                if "abrir" in texto_comando or "abre" in texto_comando:
-                    client.publish(TOPIC_TXT_ESP, "ABRIR", qos=1)
-                    st.success("🛰️ Comando enviado por MQTT: **ABRIR**.")
-                elif "cerrar" in texto_comando or "cierra" in texto_comando:
-                    client.publish(TOPIC_TXT_ESP, "CERRAR", qos=1)
-                    st.warning("🛰️ Comando enviado por MQTT: **CERRAR**.")
-                else:
-                    st.error("⚠️ Comando de voz no reconocido. Intenta incluir palabras como 'abrir' o 'cerrar'.")
-                    
-        except sr.UnknownValueError:
-            st.error("❌ No logramos entender el audio. Asegúrate de hablar claro y cerca del micrófono.")
-        except sr.RequestError as error_api:
-            st.error(f"❌ Error técnico en el servicio de voz: {error_api}")
+            elif "cerrar" in comando_voz or "quitar" in comando_voz or "nadie" in comando_voz:
+                st.session_state.estado_motor_actual = "NADIE"
+                st.error("Comando aceptado: Cerrando todos los comederos")
+                comando_valido = True
+                
+            else:
+                st.warning("Comando no reconocido. Di claramente 'Coco', 'Canela' o 'Cerrar'.")
+            
+            # Si el comando de voz modificó el estado, enviamos la actualización completa de inmediato
+            if comando_valido:
+                enviar_estado_sistema()
+                st.toast("¡Comando enviado exitosamente a Wokwi!", icon="📡")
+                
+    except sr.UnknownValueError:
+        st.error("El motor de voz no pudo entender el audio.")
+    except sr.RequestError as e:
+        st.error(f"Error con el servicio de voz: {e}")
