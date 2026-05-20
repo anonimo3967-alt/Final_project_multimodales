@@ -2,7 +2,7 @@ import streamlit as st
 import paho.mqtt.client as mqtt
 from PIL import Image, ImageOps
 import numpy as np
-import tensorflow as tf  # Cambiado de tflite a TensorFlow normal
+import tensorflow as tf
 from streamlit_mic_recorder import mic_recorder
 import speech_recognition as sr
 import io
@@ -23,24 +23,25 @@ ETIQUETAS = ["Coco", "Canela", "Nadie"]
 st.set_page_config(page_title="Comedero Inteligente - Coco & Canela", page_icon="🐾", layout="centered")
 
 # -------------------------------------------------------------------------
-# 1. INICIALIZACIÓN DE RECURSOS GLOBALES (MQTT Y MODELO KERAS/H5)
+# 1. INICIALIZACIÓN DE RECURSOS GLOBALES (MQTT Y MODELO TENSORFLOW / KERAS)
 # -------------------------------------------------------------------------
 @st.cache_resource
 def inicializar_recursos():
     try:
-        # Usamos la carga explícita heredada que sí tolera el argumento 'groups'
+        # Forzamos la carga heredada compatible con capas antiguas de Teachable Machine
         from tensorflow.keras.models import load_model
+        # Asegúrate de que el archivo se llame exactamente "keras_model.h5" en tu GitHub
         modelo_keras = load_model("keras_model.h5", compile=False)
     except Exception as e:
         modelo_keras = None
-        st.error(f"⚠️ Error al cargar el modelo de Keras... Detalle: {e}")
+        st.error(f"⚠️ Error al cargar el modelo 'keras_model.h5'. Verifica tu repositorio. Detalle: {e}")
         
     cliente_mqtt = mqtt.Client(client_id=CLIENT_ID)
     try:
         cliente_mqtt.connect(MQTT_BROKER, MQTT_PORT, 60)
         cliente_mqtt.loop_start()
     except Exception as e:
-        st.error(f"⚠️ Error MQTT: {e}")
+        st.error(f"⚠️ Error al conectar al servidor MQTT: {e}")
         
     return modelo_keras, cliente_mqtt
 
@@ -56,9 +57,6 @@ if "michi_candidato" not in st.session_state:
 if "contador_estabilidad" not in st.session_state:
     st.session_state.contador_estabilidad = 0
 
-if "hub_comunicacion" not in st.session_state:
-    st.session_state.hub_comunicacion = ""
-
 def enviar_estado_sistema():
     payload = {
         "michi_detectado": st.session_state.ultimo_michi_visto,
@@ -67,35 +65,35 @@ def enviar_estado_sistema():
     try:
         client.publish(TOPIC_JSON_ST, json.dumps(payload), qos=1)
     except Exception as e:
-        print(f"Error MQTT: {e}")
+        print(f"Error al enviar datos por MQTT: {e}")
 
 # -------------------------------------------------------------------------
-# 3. MÓDULO DE PROCESAMIENTO DE IMÁGENES (TERNSORFLOW K_ERAS)
+# 3. MÓDULO DE PROCESAMIENTO DE IMÁGENES (TENSORFLOW / KERAS)
 # -------------------------------------------------------------------------
 def procesar_y_clasificar(imagen_pil):
     if model is None:
         return "Nadie", 0.0
         
-    # Redimensionar la imagen al tamaño estándar de entrada (Teachable Machine usa 224x224)
+    # Ajuste dimensional estricto para Teachable Machine (224x224 RGB)
     size = (224, 224)
     image = ImageOps.fit(imagen_pil, size, Image.Resampling.LANCZOS)
     image_array = np.asarray(image)
     
-    # Normalización idéntica a la que genera Teachable Machine / Keras
+    # Normalización idéntica al entrenamiento en la web
     normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1.0
     input_data = np.expand_dims(normalized_image_array, axis=0)
     
-    # Inferencia directa con el modelo clásico cargado
+    # Inferencia con Keras clásico
     prediccion = model.predict(input_data, verbose=0)
-    
     indice_maximo = np.argmax(prediccion[0])
+    
     return ETIQUETAS[indice_maximo], float(prediccion[0][indice_maximo])
 
 # -------------------------------------------------------------------------
 # 4. INTERFAZ GRÁFICA PRINCIPAL (UI / UX)
 # -------------------------------------------------------------------------
 st.title("🐾 Panel del Comedero Inteligente")
-st.write("Monitoreo automático asistido por TensorFlow / Keras y control de voz.")
+st.write("Monitoreo automático asistido por TensorFlow / Keras y control de voz adaptativo.")
 
 pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial Auto", "🎙️ Control por Voz"])
 
@@ -103,64 +101,43 @@ pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial Auto", "🎙️ 
 with pestana_camara:
     st.header("Video del Comedero en Tiempo Real")
     
-    # Marcador de posición dinámico para colocar las métricas arriba del video
-    contenedor_video = st.empty()
+    # Reservamos los contenedores en la parte superior para que las métricas salgan arriba
+    contenedor_metricas = st.empty()
+    contenedor_alertas = st.empty()
     
-    # INYECCIÓN DE COMPONENTE WEB JAVASCRIPT
-    js_camera_code = """
-    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
-        <video id="webcam" autoplay playsinline width="400" height="300" style="border-radius: 10px; background-color: #222;"></video>
-        <canvas id="canvas_oculto" width="224" height="224" style="display:none;"></canvas>
-        <p style="color: #888; font-size: 13px; margin-top: 5px;">Transmisión activa con TensorFlow 🟢</p>
-    </div>
+    # Alerta inicial informativa de espera
+    with contenedor_metricas.container():
+        st.info("Esperando flujo de video continuo desde el navegador...")
+
+    # Guardamos el campo de comunicación en un bloque colapsado para limpiar el diseño visual
+    with st.expander("🛠️ Datos del Canal de Comunicación (Debug Hub)", expanded=False):
+        captura_base64 = st.text_input(
+            "transfer_frame_hub", 
+            label_visibility="collapsed", 
+            key="hub_comunicacion"
+        )
     
-    <script>
-        const video = document.getElementById('webcam');
-        const canvas = document.getElementById('canvas_oculto');
-        const ctx = canvas.getContext('2d');
-        
-        navigator.mediaDevices.getUserMedia({ video: { width: 400, height: 300 } })
-            .then((stream) => {
-                video.srcObject = stream;
-            })
-            .catch((err) => {
-                console.error("Error al acceder a la webcam: ", err);
-            });
-            
-        setInterval(() => {
-            if(video.videoWidth > 0) {
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                const dataURL = canvas.toDataURL('image/jpeg');
-                
-                const streamLitInput = window.parent.document.querySelector('input[aria-label="transfer_frame_hub"]');
-                if (streamLitInput) {
-                    streamLitInput.value = dataURL;
-                    streamLitInput.dispatchEvent(new Event('input', { bubbles: true }));
-                }
-            }
-        }, 900);
-    </script>
-    """
-    
-    st.components.v1.html(js_camera_code, height=350)
-    
-    # Input invisible puente
-    captura_base64 = st.text_input("transfer_frame_hub", label_visibility="collapsed", key="hub_comunicacion")
-    
-    if captura_base64 and captura_base64.startswith("data:image/jpeg;base64,"):
+    # Si JavaScript acaba de inyectar un cuadro de video válido
+    if captura_base64 and "base64," in captura_base64:
         try:
-            datos_limpios = captura_base64.replace("data:image/jpeg;base64,", "")
+            # Dividimos la cadena usando el separador oficial para mitigar problemas de comas
+            datos_limpios = captura_base64.split("base64,")[1]
             bytes_imagen = base64.b64decode(datos_limpios)
             img_pil = Image.open(io.BytesIO(bytes_imagen)).convert("RGB")
             
-            # Ejecutar inferencia con Keras
+            # Clasificar el cuadro actual con TensorFlow
             resultado, confianza = procesar_y_clasificar(img_pil)
             
-            with contenedor_video.container():
-                st.metric(label="IA Identificó a:", value=resultado, delta=f"Confianza: {confianza * 100:.1f}%")
+            # Reemplazar dinámicamente el mensaje de espera por los valores de la IA
+            with contenedor_metricas.container():
+                st.metric(
+                    label="🐾 Identificación de la IA:", 
+                    value=resultado, 
+                    delta=f"Confianza: {confianza * 100:.1f}%"
+                )
                 st.progress(confianza)
             
-            # Filtro de estabilidad
+            # Filtro lógico de estabilidad (evita falsos positivos por cambios bruscos de luz)
             michi_detectado_ahora = resultado if confianza > 0.75 else "Nadie"
             
             if michi_detectado_ahora == st.session_state.michi_candidato:
@@ -169,23 +146,72 @@ with pestana_camara:
                 st.session_state.michi_candidato = michi_detectado_ahora
                 st.session_state.contador_estabilidad = 0
                 
+            # Si se sostiene por 2 ciclos, enviamos la orden MQTT a Wokwi
             if st.session_state.contador_estabilidad >= 2:
                 if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
                     st.session_state.ultimo_michi_visto = michi_detectado_ahora
                     enviar_estado_sistema()
             
-            if st.session_state.ultimo_michi_visto != "Nadie":
-                st.info(f"🚨 Servomotores en Wokwi ordenados para abrir el plato de **{st.session_state.ultimo_michi_visto}**.")
-            else:
-                st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
+            # Pintar las alertas de acción de los motores abajo de la barra
+            with contenedor_alertas.container():
+                if st.session_state.ultimo_michi_visto != "Nadie":
+                    st.info(f"🚨 Servomotores en Wokwi ordenados para abrir el plato de **{st.session_state.ultimo_michi_visto}**.")
+                else:
+                    st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
                 
-        except Exception as e:
-            pass
+        except Exception as error_decode:
+            print(f"Error decodificando cuadro binario: {error_decode}")
+
+    # INYECCIÓN DE COMPONENTE WEB JAVASCRIPT: Captura frames de la webcam en segundo plano de forma síncrona
+    js_camera_code = """
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
+        <video id="webcam" autoplay playsinline width="400" height="300" style="border-radius: 10px; background-color: #222; transform: scaleX(-1);"></video>
+        <canvas id="canvas_oculto" width="224" height="224" style="display:none;"></canvas>
+        <p style="color: #4CAF50; font-size: 13px; margin-top: 5px;">● Transmisión de Video Activa con TensorFlow 🟢</p>
+    </div>
+    
+    <script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas_oculto');
+        const ctx = canvas.getContext('2d');
+        
+        navigator.mediaDevices.getUserMedia({ video: { width: 400, height: 300 } })
+            .then((stream) => { video.srcObject = stream; })
+            .catch((err) => { console.error("Error webcam: ", err); });
+            
+        // Captura cuadros continuamente cada 900ms e interactúa con el DOM de Streamlit
+        setInterval(() => {
+            if(video.videoWidth > 0) {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const dataURL = canvas.toDataURL('image/jpeg', 0.6); // Compresión al 60% para agilizar el canal
+                
+                const inputs = window.parent.document.querySelectorAll('input');
+                let streamLitInput = null;
+                for (let input of inputs) {
+                    if (input.getAttribute('aria-label') === 'transfer_frame_hub' || input.id === 'hub_comunicacion') {
+                        streamLitInput = input;
+                        break;
+                    }
+                }
+                if (!streamLitInput && inputs.length > 0) {
+                    streamLitInput = window.parent.document.querySelector('input[type="text"]');
+                }
+                
+                if (streamLitInput) {
+                    streamLitInput.value = dataURL;
+                    streamLitInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    streamLitInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }
+        }, 900);
+    </script>
+    """
+    st.components.v1.html(js_camera_code, height=350)
 
 # --- PESTAÑA B: INTERFAZ DE CONTROL POR VOZ ---
 with pestana_voz:
     st.header("Comandos de Voz del Sistema")
-    st.write("Presiona el botón para grabar un comando de voz (Ej: *'abrir plato'*, *'cerrar comedero'*).")
+    st.write("Presiona el botón para grabar un comando de voz directo hacia los servomotores (Ej: *'abrir plato'*, *'cerrar comedero'*).")
     
     audio_grabado = mic_recorder(
         start_prompt="🎙️ Iniciar grabación",
@@ -216,9 +242,9 @@ with pestana_voz:
                     client.publish(TOPIC_TXT_ESP, "CERRAR", qos=1)
                     st.warning("🛰️ Comando enviado por MQTT: **CERRAR**.")
                 else:
-                    st.error("⚠️ Comando de voz no reconocido.")
+                    st.error("⚠️ Comando de voz no reconocido. Intenta incluir palabras como 'abrir' o 'cerrar'.")
                     
         except sr.UnknownValueError:
-            st.error("❌ No logramos entender el audio.")
+            st.error("❌ No logramos entender el audio. Asegúrate de hablar claro y cerca del micrófono.")
         except sr.RequestError as error_api:
-            st.error(f"❌ Error en el servicio de voz: {error_api}")
+            st.error(f"❌ Error técnico en el servicio de voz: {error_api}")
