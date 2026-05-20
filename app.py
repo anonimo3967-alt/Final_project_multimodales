@@ -29,7 +29,6 @@ st.set_page_config(page_title="Comedero Inteligente - Coco & Canela", page_icon=
 @st.cache_resource
 def inicializar_recursos():
     try:
-        # Forzamos la carga heredada compatible con capas antiguas de Teachable Machine
         from tensorflow.keras.models import load_model
         # Asegúrate de que el archivo se llame exactamente "keras_model.h5" en tu GitHub
         modelo_keras = load_model("keras_model.h5", compile=False)
@@ -57,6 +56,8 @@ if "michi_candidato" not in st.session_state:
     st.session_state.michi_candidato = "Nadie"
 if "contador_estabilidad" not in st.session_state:
     st.session_state.contador_estabilidad = 0
+if "frame_actual_base64" not in st.session_state:
+    st.session_state.frame_actual_base64 = None
 
 def enviar_estado_sistema():
     payload = {
@@ -75,16 +76,15 @@ def procesar_y_clasificar(imagen_pil):
     if model is None:
         return "Nadie", 0.0
         
-    # Ajuste dimensional estricto para Teachable Machine (224x224 RGB)
     size = (224, 224)
     image = ImageOps.fit(imagen_pil, size, Image.Resampling.LANCZOS)
     image_array = np.asarray(image)
     
-    # Normalización idéntica al entrenamiento en la web
+    # Normalización idéntica al entrenamiento (Teachable Machine)
     normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1.0
     input_data = np.expand_dims(normalized_image_array, axis=0)
     
-    # Inferencia con Keras clásico
+    # Inferencia con Keras
     prediccion = model.predict(input_data, verbose=0)
     indice_maximo = np.argmax(prediccion[0])
     
@@ -98,7 +98,7 @@ st.write("Monitoreo automático asistido por TensorFlow / Keras y control de voz
 
 pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial Auto", "🎙️ Control por Voz"])
 
-# --- PESTAÑA A: CÁMARA AUTOMÁTICA EN TIEMPO REAL ---
+# --- PESTAÑA A: CÁMARA AUTOMÁTICA EN TIEMPO REAL (MECANISMO DE DISPARO REFORZADO) ---
 with pestana_camara:
     st.header("Video del Comedero en Tiempo Real")
     
@@ -106,11 +106,26 @@ with pestana_camara:
     contenedor_metricas = st.empty()
     contenedor_alertas = st.empty()
 
-    # Leemos la imagen directamente desde los query parameters de la URL de la sesión
-    query_params = st.query_params
-    captura_base64 = query_params.get("michi_frame", None)
-    
-    if captura_base64:
+    # -------------------------------------------------------------------------
+    # EL HUB DE COMUNICACIÓN (Ahora visible para depuración)
+    # -------------------------------------------------------------------------
+    # Usamos st.text_input con on_change para garantizar que Python se entere
+    def on_hub_change():
+        st.session_state.frame_actual_base64 = st.session_state.hub_comunicacion
+
+    st.text_input(
+        "transfer_frame_hub", 
+        key="hub_comunicacion", 
+        on_change=on_hub_change, 
+        label_visibility="collapsed"
+    )
+
+    # -------------------------------------------------------------------------
+    # PROCESAMIENTO SI LLEGA UN FRAME
+    # -------------------------------------------------------------------------
+    captura_base64 = st.session_state.frame_actual_base64
+
+    if captura_base64 and captura_base64.startswith("data:image/jpeg;base64,"):
         try:
             # Reconstruir los bytes de la imagen limpiando el formato base64
             datos_limpios = captura_base64.split("base64,")[-1].replace(" ", "+")
@@ -151,17 +166,19 @@ with pestana_camara:
                     st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
                 
         except Exception as error_decode:
-            print(f"Error decodificando cuadro binario: {error_decode}")
+            # Si el byte está corrupto, lo limpiamos para el siguiente ciclo
+            st.session_state.frame_actual_base64 = None
+            st.error(f"Error decodificando cuadro binario: {error_decode}")
     else:
         with contenedor_metricas.container():
-            st.info("Inicializando transmisión de video autónoma...")
+            st.info("Esperando flujo de video continuo desde el navegador...")
 
-    # INYECCIÓN DE COMPONENTE WEB JAVASCRIPT: Pasa la imagen directamente a la URL
+    # INYECCIÓN DE COMPONENTE WEB JAVASCRIPT: Pasa la imagen directamente al st.text_input
     js_camera_code = """
     <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
         <video id="webcam" autoplay playsinline width="400" height="300" style="border-radius: 10px; background-color: #222; transform: scaleX(-1);"></video>
         <canvas id="canvas_oculto" width="224" height="224" style="display:none;"></canvas>
-        <p style="color: #4CAF50; font-size: 13px; margin-top: 5px;">● Transmisión de Video Activa con TensorFlow 🟢</p>
+        <p style="color: #4CAF50; font-size: 13px; margin-top: 5px;">● Transmisión de Video Activa🟢</p>
     </div>
     
     <script>
@@ -178,18 +195,33 @@ with pestana_camara:
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
                 const dataURL = canvas.toDataURL('image/jpeg', 0.5); // Compresión optimizada al 50%
                 
-                // Guardamos el cuadro en los parámetros de la URL de Streamlit
-                const urlParams = new URLSearchParams(window.parent.location.search);
-                urlParams.set('michi_frame', dataURL);
-                window.parent.history.replaceState({}, '', window.parent.location.pathname + '?' + urlParams.toString());
+                // Buscamos el input de texto de Streamlit de la forma más compatible posible
+                const inputs = window.parent.document.querySelectorAll('input');
+                let streamLitInput = null;
+                for (let input of inputs) {
+                    if (input.getAttribute('aria-label') === 'transfer_frame_hub') {
+                        streamLitInput = input;
+                        break;
+                    }
+                }
+                if (!streamLitInput && inputs.length > 0) {
+                    streamLitInput = window.parent.document.querySelector('input[type="text"]');
+                }
+                
+                // Si encontramos la caja de texto, inyectamos la imagen y forzamos el cambio
+                if (streamLitInput) {
+                    streamLitInput.value = dataURL;
+                    streamLitInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    streamLitInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
             }
-        }, 1000); // 1 segundo entre capturas para dar holgura a Keras
+        }, 1000); // 1 segundo entre capturas
     </script>
     """
     st.components.v1.html(js_camera_code, height=350)
     
-    # Bucle síncrono en Python que obliga a leer el parámetro inyectado de la URL
-    time.sleep(0.8)
+    # Bucle síncrono en Python reforzado
+    time.sleep(0.9)
     st.rerun()
 
 # --- PESTAÑA B: INTERFAZ DE CONTROL POR VOZ ---
