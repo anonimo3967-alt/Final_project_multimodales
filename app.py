@@ -7,6 +7,7 @@ from streamlit_mic_recorder import mic_recorder
 import speech_recognition as sr
 import io
 import json
+import time
 
 # -------------------------------------------------------------------------
 # CONTEXTO DEL PROYECTO: COMEDERO AUTOMATIZADO (COCO Y CANELA)
@@ -92,64 +93,66 @@ st.write("Monitoreo automático asistido por TensorFlow / Keras y control de voz
 
 pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial Auto", "🎙️ Control por Voz"])
 
-# --- PESTAÑA A: CÁMARA AUTOMÁTICA EN TIEMPO REAL (NATIVA) ---
+# --- PESTAÑA A: CÁMARA AUTOMÁTICA EN TIEMPO REAL (ZONA CONTROLADA) ---
 with pestana_camara:
     st.header("Cámara del Comedero en Tiempo Real")
     
     contenedor_metricas = st.empty()
     contenedor_alertas = st.empty()
 
-    # Componente oficial e inbloqueable de Streamlit para capturar video/fotos
-    foto_capturada = st.camera_input("Enfoque hacia el plato de comida", label_visibility="visible")
+    # Encapsulamos la cámara dentro de un fragmento con un retraso controlado para que no sature la CPU
+    @st.fragment
+    def renderizar_camara_inteligente():
+        # Componente oficial e inbloqueable de Streamlit para capturar video/fotos
+        foto_capturada = st.camera_input("Enfoque hacia el plato de comida", label_visibility="visible")
 
-    # Si hay una imagen activa en el buffer de la cámara
-    if foto_capturada:
-        try:
-            # Leer los bytes directamente del componente nativo
-            bytes_imagen = foto_capturada.getvalue()
-            img_pil = Image.open(io.BytesIO(bytes_imagen)).convert("RGB")
-            
-            # Ejecutar inferencia de la IA
-            resultado, confianza = procesar_y_clasificar(img_pil)
-            
-            with contenedor_metricas.container():
-                st.metric(
-                    label="🐾 Identificación actual de la IA:", 
-                    value=resultado, 
-                    delta=f"Confianza: {confianza * 100:.1f}%"
-                )
-                st.progress(confianza)
-            
-            # Filtro de estabilidad lógica para evitar falsos positivos con Coco o Canela
-            michi_detectado_ahora = resultado if confianza > 0.70 else "Nadie"
-            
-            if michi_detectado_ahora == st.session_state.michi_candidato:
-                st.session_state.contador_estabilidad += 1
-            else:
-                st.session_state.michi_candidato = michi_detectado_ahora
-                st.session_state.contador_estabilidad = 0
+        if foto_capturada:
+            try:
+                bytes_imagen = foto_capturada.getvalue()
+                img_pil = Image.open(io.BytesIO(bytes_imagen)).convert("RGB")
                 
-            if st.session_state.contador_estabilidad >= 1: # Respuesta rápida
-                if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
-                    st.session_state.ultimo_michi_visto = michi_detectado_ahora
-                    enviar_estado_sistema()
-            
-            with contenedor_alertas.container():
-                if st.session_state.ultimo_michi_visto != "Nadie":
-                    st.info(f"🚨 Servomotores en Wokwi ordenados para abrir el plato de **{st.session_state.ultimo_michi_visto}**.")
+                # Ejecutar inferencia de la IA
+                resultado, confianza = procesar_y_clasificar(img_pil)
+                
+                with contenedor_metricas.container():
+                    st.metric(
+                        label="🐾 Identificación actual de la IA:", 
+                        value=resultado, 
+                        delta=f"Confianza: {confianza * 100:.1f}%"
+                    )
+                    st.progress(confianza)
+                
+                michi_detectado_ahora = resultado if confianza > 0.70 else "Nadie"
+                
+                if michi_detectado_ahora == st.session_state.michi_candidato:
+                    st.session_state.contador_estabilidad += 1
                 else:
-                    st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
+                    st.session_state.michi_candidato = michi_detectado_ahora
+                    st.session_state.contador_estabilidad = 0
+                    
+                if st.session_state.contador_estabilidad >= 1: 
+                    if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
+                        st.session_state.ultimo_michi_visto = michi_detectado_ahora
+                        enviar_estado_sistema()
                 
-        except Exception as error_decode:
-            st.error(f"⚠️ Error procesando la imagen en el modelo: {error_decode}")
-    else:
-        with contenedor_metricas.container():
-            st.info("Activa tu cámara arriba para iniciar el reconocimiento automático de la IA.")
+                with contenedor_alertas.container():
+                    if st.session_state.ultimo_michi_visto != "Nadie":
+                        st.info(f"🚨 Servomotores en Wokwi ordenados para abrir el plato de **{st.session_state.ultimo_michi_visto}**.")
+                    else:
+                        st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
+                    
+            except Exception as error_decode:
+                st.error(f"⚠️ Error procesando la imagen en el modelo: {error_decode}")
+        else:
+            with contenedor_metricas.container():
+                st.info("Activa tu cámara arriba para iniciar el reconocimiento automático de la IA.")
 
-    # Control de bucle continuo automático integrado
-    st.checkbox("Mantener flujo continuo de análisis (Auto-refresh)", value=True, key="chk_refresh")
-    if st.session_state.chk_refresh:
+        # Añadimos una pausa controlada de 2 segundos para darle un respiro al servidor
+        time.sleep(2)
         st.rerun()
+
+    # Ejecutamos el fragmento de la cámara
+    renderizar_camara_inteligente()
 
 # --- PESTAÑA B: INTERFAZ DE CONTROL POR VOZ ---
 with pestana_voz:
