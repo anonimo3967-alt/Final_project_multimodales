@@ -8,7 +8,6 @@ import speech_recognition as sr
 import io
 import json
 import base64
-import time
 
 # -------------------------------------------------------------------------
 # CONTEXTO DEL PROYECTO: COMEDERO AUTOMATIZADO (COCO Y CANELA)
@@ -30,18 +29,17 @@ st.set_page_config(page_title="Comedero Inteligente - Coco & Canela", page_icon=
 def inicializar_recursos():
     try:
         from tensorflow.keras.models import load_model
-        # Asegúrate de que el archivo se llame exactamente "keras_model.h5" en tu GitHub
         modelo_keras = load_model("keras_model.h5", compile=False)
     except Exception as e:
         modelo_keras = None
-        st.error(f"⚠️ Error al cargar el modelo 'keras_model.h5'. Verifica tu repositorio. Detalle: {e}")
+        st.error(f"⚠️ Error al cargar el modelo 'keras_model.h5'. Detalle: {e}")
         
     cliente_mqtt = mqtt.Client(client_id=CLIENT_ID)
     try:
         cliente_mqtt.connect(MQTT_BROKER, MQTT_PORT, 60)
         cliente_mqtt.loop_start()
     except Exception as e:
-        st.error(f"⚠️ Error al conectar al servidor MQTT: {e}")
+        st.error(f"⚠️ Error MQTT: {e}")
         
     return modelo_keras, cliente_mqtt
 
@@ -56,8 +54,6 @@ if "michi_candidato" not in st.session_state:
     st.session_state.michi_candidato = "Nadie"
 if "contador_estabilidad" not in st.session_state:
     st.session_state.contador_estabilidad = 0
-if "frame_actual_base64" not in st.session_state:
-    st.session_state.frame_actual_base64 = None
 
 def enviar_estado_sistema():
     payload = {
@@ -67,7 +63,7 @@ def enviar_estado_sistema():
     try:
         client.publish(TOPIC_JSON_ST, json.dumps(payload), qos=1)
     except Exception as e:
-        print(f"Error al enviar datos por MQTT: {e}")
+        print(f"Error MQTT: {e}")
 
 # -------------------------------------------------------------------------
 # 3. MÓDULO DE PROCESAMIENTO DE IMÁGENES (TENSORFLOW / KERAS)
@@ -80,11 +76,10 @@ def procesar_y_clasificar(imagen_pil):
     image = ImageOps.fit(imagen_pil, size, Image.Resampling.LANCZOS)
     image_array = np.asarray(image)
     
-    # Normalización idéntica al entrenamiento (Teachable Machine)
+    # Normalización idéntica a Teachable Machine
     normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1.0
     input_data = np.expand_dims(normalized_image_array, axis=0)
     
-    # Inferencia con Keras
     prediccion = model.predict(input_data, verbose=0)
     indice_maximo = np.argmax(prediccion[0])
     
@@ -94,57 +89,43 @@ def procesar_y_clasificar(imagen_pil):
 # 4. INTERFAZ GRÁFICA PRINCIPAL (UI / UX)
 # -------------------------------------------------------------------------
 st.title("🐾 Panel del Comedero Inteligente")
-st.write("Monitoreo automático asistido por TensorFlow / Keras y control de voz adaptativo.")
+st.write("Monitoreo automático asistido por TensorFlow / Keras y control de voz.")
 
 pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial Auto", "🎙️ Control por Voz"])
 
-# --- PESTAÑA A: CÁMARA AUTOMÁTICA EN TIEMPO REAL (MECANISMO DE DISPARO REFORZADO) ---
+# --- PESTAÑA A: CÁMARA AUTOMÁTICA EN TIEMPO REAL ---
 with pestana_camara:
     st.header("Video del Comedero en Tiempo Real")
     
-    # Reservamos los contenedores dinámicos arriba del video
     contenedor_metricas = st.empty()
     contenedor_alertas = st.empty()
 
-    # -------------------------------------------------------------------------
-    # EL HUB DE COMUNICACIÓN (Ahora visible para depuración)
-    # -------------------------------------------------------------------------
-    # Usamos st.text_input con on_change para garantizar que Python se entere
-    def on_hub_change():
-        st.session_state.frame_actual_base64 = st.session_state.hub_comunicacion
+    # Ponemos un botón invisible de actualización para que JavaScript le haga "Click" desde fuera
+    # Al hacer click de forma virtual, forzamos a Streamlit a refrescarse aceptando el valor del input
+    if st.button("🔄 Sincronizar Cámara", key="btn_sincro"):
+        captura_base64 = st.session_state.get("hub_comunicacion", "")
+    else:
+        captura_base64 = st.session_state.get("hub_comunicacion", "")
 
-    st.text_input(
-        "transfer_frame_hub", 
-        key="hub_comunicacion", 
-        on_change=on_hub_change, 
-        label_visibility="collapsed"
+    # Input clásico expuesto para la recepción de frames
+    captura_base64 = st.text_input(
+        "Canal de Comunicación Activo (Hub)", 
+        key="hub_comunicacion"
     )
 
-    # -------------------------------------------------------------------------
-    # PROCESAMIENTO SI LLEGA UN FRAME
-    # -------------------------------------------------------------------------
-    captura_base64 = st.session_state.frame_actual_base64
-
-    if captura_base64 and captura_base64.startswith("data:image/jpeg;base64,"):
+    if captura_base64 and "base64," in captura_base64:
         try:
-            # Reconstruir los bytes de la imagen limpiando el formato base64
-            datos_limpios = captura_base64.split("base64,")[-1].replace(" ", "+")
+            datos_limpios = captura_base64.split("base64,")[1].strip().replace(" ", "+")
             bytes_imagen = base64.b64decode(datos_limpios)
             img_pil = Image.open(io.BytesIO(bytes_imagen)).convert("RGB")
             
-            # Clasificar el cuadro actual con TensorFlow
+            # Ejecutar inferencia
             resultado, confianza = procesar_y_clasificar(img_pil)
             
-            # Imprimir las métricas dinámicamente arriba
             with contenedor_metricas.container():
-                st.metric(
-                    label="🐾 Identificación de la IA:", 
-                    value=resultado, 
-                    delta=f"Confianza: {confianza * 100:.1f}%"
-                )
+                st.metric(label="🐾 Identificación de la IA:", value=resultado, delta=f"Confianza: {confianza * 100:.1f}%")
                 st.progress(confianza)
             
-            # Filtro lógico de estabilidad contra parpadeos
             michi_detectado_ahora = resultado if confianza > 0.75 else "Nadie"
             
             if michi_detectado_ahora == st.session_state.michi_candidato:
@@ -158,7 +139,6 @@ with pestana_camara:
                     st.session_state.ultimo_michi_visto = michi_detectado_ahora
                     enviar_estado_sistema()
             
-            # Alertas del estado de los servomotores
             with contenedor_alertas.container():
                 if st.session_state.ultimo_michi_visto != "Nadie":
                     st.info(f"🚨 Servomotores en Wokwi ordenados para abrir el plato de **{st.session_state.ultimo_michi_visto}**.")
@@ -166,19 +146,17 @@ with pestana_camara:
                     st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
                 
         except Exception as error_decode:
-            # Si el byte está corrupto, lo limpiamos para el siguiente ciclo
-            st.session_state.frame_actual_base64 = None
-            st.error(f"Error decodificando cuadro binario: {error_decode}")
+            st.error(f"Error procesando la imagen: {error_decode}")
     else:
         with contenedor_metricas.container():
-            st.info("Esperando flujo de video continuo desde el navegador...")
+            st.warning("📸 Por favor, asegúrate de otorgar permisos de cámara en tu navegador.")
 
-    # INYECCIÓN DE COMPONENTE WEB JAVASCRIPT: Pasa la imagen directamente al st.text_input
+    # SCRIPT DE JAVASCRIPT MODIFICADO PARA SIMULAR ACCIÓN HUMANA (CLICK FORZADO)
     js_camera_code = """
     <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
         <video id="webcam" autoplay playsinline width="400" height="300" style="border-radius: 10px; background-color: #222; transform: scaleX(-1);"></video>
         <canvas id="canvas_oculto" width="224" height="224" style="display:none;"></canvas>
-        <p style="color: #4CAF50; font-size: 13px; margin-top: 5px;">● Transmisión de Video Activa🟢</p>
+        <p style="color: #4CAF50; font-size: 13px; margin-top: 5px;">● Transmisión de Video en Vivo Activa 🟢</p>
     </div>
     
     <script>
@@ -193,41 +171,51 @@ with pestana_camara:
         setInterval(() => {
             if(video.videoWidth > 0) {
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                const dataURL = canvas.toDataURL('image/jpeg', 0.5); // Compresión optimizada al 50%
+                const dataURL = canvas.toDataURL('image/jpeg', 0.5); 
                 
-                // Buscamos el input de texto de Streamlit de la forma más compatible posible
-                const inputs = window.parent.document.querySelectorAll('input');
-                let streamLitInput = null;
+                // Buscar el input de texto y el botón de actualización en la app madre
+                const doc = window.parent.document;
+                const inputs = doc.querySelectorAll('input[type="text"]');
+                const botones = doc.querySelectorAll('button');
+                
+                let targetInput = null;
+                let targetBotn = null;
+                
+                // Encontrar el input del hub
                 for (let input of inputs) {
-                    if (input.getAttribute('aria-label') === 'transfer_frame_hub') {
-                        streamLitInput = input;
+                    if (input.value !== undefined) {
+                        targetInput = input; 
+                    }
+                }
+                
+                // Encontrar el botón de actualización
+                for (let btn of botones) {
+                    if (btn.innerText && btn.innerText.includes('Sincronizar Cámara')) {
+                        targetBotn = btn;
                         break;
                     }
                 }
-                if (!streamLitInput && inputs.length > 0) {
-                    streamLitInput = window.parent.document.querySelector('input[type="text"]');
-                }
                 
-                // Si encontramos la caja de texto, inyectamos la imagen y forzamos el cambio
-                if (streamLitInput) {
-                    streamLitInput.value = dataURL;
-                    streamLitInput.dispatchEvent(new Event('input', { bubbles: true }));
-                    streamLitInput.dispatchEvent(new Event('change', { bubbles: true }));
+                if (targetInput) {
+                    // Forzar el valor
+                    targetInput.value = dataURL;
+                    targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    
+                    // Hacer click virtual en el botón para obligar a Streamlit a leer el input de verdad
+                    if (targetBotn) {
+                        targetBotn.click();
+                    }
                 }
             }
-        }, 1000); // 1 segundo entre capturas
+        }, 1200); // Análisis cada 1.2 segundos para estabilidad
     </script>
     """
     st.components.v1.html(js_camera_code, height=350)
-    
-    # Bucle síncrono en Python reforzado
-    time.sleep(0.9)
-    st.rerun()
 
 # --- PESTAÑA B: INTERFAZ DE CONTROL POR VOZ ---
 with pestana_voz:
     st.header("Comandos de Voz del Sistema")
-    st.write("Presiona el botón para grabar un comando de voz directo hacia los servomotores (Ej: *'abrir plato'*, *'cerrar comedero'*).")
+    st.write("Presiona el botón para grabar un comando de voz directo hacia los servomotores.")
     
     audio_grabado = mic_recorder(
         start_prompt="🎙️ Iniciar grabación",
@@ -258,9 +246,9 @@ with pestana_voz:
                     client.publish(TOPIC_TXT_ESP, "CERRAR", qos=1)
                     st.warning("🛰️ Comando enviado por MQTT: **CERRAR**.")
                 else:
-                    st.error("⚠️ Comando de voz no reconocido. Intenta incluir palabras como 'abrir' o 'cerrar'.")
+                    st.error("⚠️ Comando de voz no reconocido.")
                     
         except sr.UnknownValueError:
-            st.error("❌ No logramos entender el audio. Asegúrate de hablar claro y cerca del micrófono.")
+            st.error("❌ No logramos entender el audio.")
         except sr.RequestError as error_api:
             st.error(f"❌ Error técnico en el servicio de voz: {error_api}")
