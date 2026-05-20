@@ -9,3 +9,4 @@ tensorflow==2.12
 streamlit-webrtc
 streamlit-mic-recorder
 SpeechRecognition
+camera_input_live
