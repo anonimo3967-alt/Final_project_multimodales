@@ -1,8 +1,12 @@
 streamlit
-pillow
-numpy==1.26.4
-tensorflow-cpu==2.15.0
-keras==2.15.0
-paho-mqtt==1.6.1
-streamlit_mic_recorder
+paho-mqtt== 1.6.1
+keras
+av
+numpy
+opencv-python-headless
+Pillow
+tensorflow==2.12
+streamlit-webrtc
+streamlit-mic-recorder
 SpeechRecognition
+camera_input_live
