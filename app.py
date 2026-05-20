@@ -7,7 +7,6 @@ from streamlit_mic_recorder import mic_recorder
 import speech_recognition as sr
 import io
 import json
-import base64
 
 # -------------------------------------------------------------------------
 # CONTEXTO DEL PROYECTO: COMEDERO AUTOMATIZADO (COCO Y CANELA)
@@ -93,21 +92,21 @@ st.write("Monitoreo automático asistido por TensorFlow / Keras y control de voz
 
 pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial Auto", "🎙️ Control por Voz"])
 
-# --- PESTAÑA A: CÁMARA AUTOMÁTICA EN TIEMPO REAL ---
+# --- PESTAÑA A: CÁMARA AUTOMÁTICA EN TIEMPO REAL (NATIVA) ---
 with pestana_camara:
-    st.header("Video del Comedero en Tiempo Real")
+    st.header("Cámara del Comedero en Tiempo Real")
     
     contenedor_metricas = st.empty()
     contenedor_alertas = st.empty()
 
-    # Caja de entrada oculta para almacenar la imagen de forma segura en Python
-    captura_base64 = st.text_input("data_frame_bridge", key="hub_video_stream", label_visibility="collapsed")
+    # Componente oficial e inbloqueable de Streamlit para capturar video/fotos
+    foto_capturada = st.camera_input("Enfoque hacia el plato de comida", label_visibility="visible")
 
-    # Procesar la imagen si contiene los datos de la cámara
-    if captura_base64 and "base64," in captura_base64:
+    # Si hay una imagen activa en el buffer de la cámara
+    if foto_capturada:
         try:
-            datos_limpios = captura_base64.split("base64,")[1].strip().replace(" ", "+")
-            bytes_imagen = base64.b64decode(datos_limpios)
+            # Leer los bytes directamente del componente nativo
+            bytes_imagen = foto_capturada.getvalue()
             img_pil = Image.open(io.BytesIO(bytes_imagen)).convert("RGB")
             
             # Ejecutar inferencia de la IA
@@ -121,7 +120,7 @@ with pestana_camara:
                 )
                 st.progress(confianza)
             
-            # Filtro de estabilidad lógica para evitar falsos positivos
+            # Filtro de estabilidad lógica para evitar falsos positivos con Coco o Canela
             michi_detectado_ahora = resultado if confianza > 0.70 else "Nadie"
             
             if michi_detectado_ahora == st.session_state.michi_candidato:
@@ -130,7 +129,7 @@ with pestana_camara:
                 st.session_state.michi_candidato = michi_detectado_ahora
                 st.session_state.contador_estabilidad = 0
                 
-            if st.session_state.contador_estabilidad >= 2:
+            if st.session_state.contador_estabilidad >= 1: # Respuesta rápida
                 if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
                     st.session_state.ultimo_michi_visto = michi_detectado_ahora
                     enviar_estado_sistema()
@@ -145,67 +144,12 @@ with pestana_camara:
             st.error(f"⚠️ Error procesando la imagen en el modelo: {error_decode}")
     else:
         with contenedor_metricas.container():
-            st.info("Esperando flujo de video continuo desde el navegador...")
+            st.info("Activa tu cámara arriba para iniciar el reconocimiento automático de la IA.")
 
-    # INYECCIÓN HTML CON SCRIPT DE PUENTE MEJORADO CONTRA EL BLOQUEO DE TRANSMISIÓN
-    st.components.v1.html(
-        """
-        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: sans-serif;">
-            <video id="webcam" autoplay playsinline width="380" height="285" style="border-radius: 10px; background-color: #222; transform: scaleX(-1);"></video>
-            <canvas id="canvas_oculto" width="224" height="224" style="display:none;"></canvas>
-            <p style="color: #4CAF50; font-size: 13px; margin-top: 8px; font-weight: bold;">● Transmisión de Video Activa 🟢</p>
-        </div>
-        
-        <script>
-            const video = document.getElementById('webcam');
-            const canvas = document.getElementById('canvas_oculto');
-            const ctx = canvas.getContext('2d');
-            
-            navigator.mediaDevices.getUserMedia({ video: { width: 380, height: 285 } })
-                .then((stream) => { 
-                    video.srcObject = stream; 
-                })
-                .catch((err) => { 
-                    console.error("Error al abrir la cámara web: ", err); 
-                });
-                
-            setInterval(() => {
-                if(video.videoWidth > 0) {
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    const dataURL = canvas.toDataURL('image/jpeg', 0.4); 
-                    
-                    // Buscamos el input de la app usando selectores nativos de inputs de texto de Streamlit
-                    const inputs = window.parent.document.querySelectorAll('input[type="text"]');
-                    let targetInput = null;
-                    
-                    for (let input of inputs) {
-                        if (input.getAttribute('aria-label') === 'data_frame_bridge') {
-                            targetInput = input;
-                            break;
-                        }
-                    }
-                    if(!targetInput && inputs.length > 0) {
-                        targetInput = inputs[0];
-                    }
-                    
-                    if (targetInput) {
-                        // Usamos el prototipo nativo de JavaScript para simular que un humano escribió el texto
-                        // Esto rompe por completo el bloqueo de seguridad de Streamlit Cloud
-                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-                        nativeInputValueSetter.call(targetInput, dataURL);
-                        
-                        // Disparamos los eventos para despertar a Python de forma inmediata
-                        const evInput = new Event('input', { bubbles: true });
-                        targetInput.dispatchEvent(evInput);
-                        const evChange = new Event('change', { bubbles: true });
-                        targetInput.dispatchEvent(evChange);
-                    }
-                }
-            }, 1000); 
-        </script>
-        """,
-        height=330
-    )
+    # Control de bucle continuo automático integrado
+    st.checkbox("Mantener flujo continuo de análisis (Auto-refresh)", value=True, key="chk_refresh")
+    if st.session_state.chk_refresh:
+        st.rerun()
 
 # --- PESTAÑA B: INTERFAZ DE CONTROL POR VOZ ---
 with pestana_voz:
