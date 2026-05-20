@@ -7,6 +7,7 @@ from streamlit_mic_recorder import mic_recorder
 import speech_recognition as sr
 import io
 import json
+import time
 
 # -------------------------------------------------------------------------
 # CONTEXTO DEL PROYECTO: COMEDERO AUTOMATIZADO (COCO Y CANELA)
@@ -26,10 +27,9 @@ st.set_page_config(page_title="Comedero Inteligente - Coco & Canela", page_icon=
 # -------------------------------------------------------------------------
 @st.cache_resource
 def inicializar_recursos():
-    # Carga optimizada y ligera usando TensorFlow Lite
+    # Carga optimizada y ligera usando TensorFlow Lite para evitar caídas de RAM
     try:
-        # IMPORTANTE: Asegúrate de descargar tu modelo en formato .tflite 
-        # desde Teachable Machine y subirlo a GitHub con el nombre "model.tflite"
+        # Asegúrate de tener el archivo "model.tflite" subido en la raíz de tu GitHub
         interprete = tflite.Interpreter(model_path="model.tflite")
         interprete.allocate_tensors()
     except Exception as e:
@@ -82,7 +82,7 @@ def procesar_y_clasificar(imagen_pil):
     normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1.0
     input_data = np.expand_dims(normalized_image_array, axis=0)
     
-    # Proceso de inferencia ligera para TFLite
+    # Inferencia ligera con arreglos de punteros nativos de TFLite
     detalles_entrada = model.get_input_details()
     detalles_salida = model.get_output_details()
     
@@ -94,15 +94,18 @@ def procesar_y_clasificar(imagen_pil):
     return ETIQUETAS[indice_maximo], prediccion[0][indice_maximo]
 
 # -------------------------------------------------------------------------
-# 4. INTERFAZ GRÁFICA PRINCIPAL (UI / UX)
+# 4. INTERFAZ GRÁFICA PRINCIPAL (UI / UX CON AUTOMACIÓN LOOP)
 # -------------------------------------------------------------------------
 st.title("🐾 Panel del Comedero Inteligente")
-st.write("Monitoreo visual mediante IA Ligera y control por voz para **Coco** y **Canela**.")
+st.write("Monitoreo en tiempo real asistido por IA Ligera y control de voz adaptativo.")
 
 pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial", "🎙️ Control por Voz"])
 
+# --- PESTAÑA A: CÁMARA CON BUCLE DE RERUN AUTOMÁTICO ---
 with pestana_camara:
     st.header("Monitoreo del Comedero en Vivo")
+    
+    # Componente nativo del ecosistema de Streamlit
     imagen_feed = st.camera_input("Enfoque la cámara hacia el plato del comedero")
     
     if imagen_feed:
@@ -114,6 +117,7 @@ with pestana_camara:
         
         michi_detectado_ahora = resultado if confianza > 0.75 else "Nadie"
         
+        # Filtro de estabilización matemática contra parpadeos de cuadros
         if michi_detectado_ahora == st.session_state.michi_candidato:
             st.session_state.contador_estabilidad += 1
         else:
@@ -129,7 +133,13 @@ with pestana_camara:
             st.info(f"🚨 Servomotores accionados: Se abrió el compartimiento para **{st.session_state.ultimo_michi_visto}**.")
         else:
             st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
+            
+    # BUCLE SÍNCRONO PARA TIEMPO REAL CONTINUO
+    # Espera 1 segundo y relanza la lectura de la cámara de manera autónoma
+    time.sleep(1.0)
+    st.rerun()
 
+# --- PESTAÑA B: INTERFAZ DE CONTROL POR VOZ ---
 with pestana_voz:
     st.header("Comandos de Voz del Sistema")
     st.write("Presiona el botón para grabar un comando de voz (Ej: *'abrir plato'*, *'cerrar comedero'*).")
