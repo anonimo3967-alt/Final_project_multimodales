@@ -1,7 +1,7 @@
 streamlit
 pillow
 numpy==1.26.4
-tflite-runtime
+tensorflow
 paho-mqtt==1.6.1
 streamlit_mic_recorder
 SpeechRecognition
