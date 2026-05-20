@@ -7,7 +7,7 @@ from streamlit_mic_recorder import mic_recorder
 import speech_recognition as sr
 import io
 import json
-import time
+import base64
 
 # -------------------------------------------------------------------------
 # CONTEXTO DEL PROYECTO: COMEDERO AUTOMATIZADO (COCO Y CANELA)
@@ -27,22 +27,19 @@ st.set_page_config(page_title="Comedero Inteligente - Coco & Canela", page_icon=
 # -------------------------------------------------------------------------
 @st.cache_resource
 def inicializar_recursos():
-    # Carga optimizada y ligera usando TensorFlow Lite para evitar caídas de RAM
     try:
-        # Asegúrate de tener el archivo "model.tflite" subido en la raíz de tu GitHub
         interprete = tflite.Interpreter(model_path="model.tflite")
         interprete.allocate_tensors()
     except Exception as e:
         interprete = None
-        st.error(f"⚠️ Error al cargar el modelo 'model.tflite'. Verifica que esté en el repositorio. Detalle: {e}")
+        st.error(f"⚠️ Error al cargar 'model.tflite': {e}")
         
     cliente_mqtt = mqtt.Client(client_id=CLIENT_ID)
-    
     try:
         cliente_mqtt.connect(MQTT_BROKER, MQTT_PORT, 60)
         cliente_mqtt.loop_start()
     except Exception as e:
-        st.error(f"⚠️ No se pudo conectar al servidor MQTT: {e}")
+        st.error(f"⚠️ Error MQTT: {e}")
         
     return interprete, cliente_mqtt
 
@@ -58,6 +55,10 @@ if "michi_candidato" not in st.session_state:
 if "contador_estabilidad" not in st.session_state:
     st.session_state.contador_estabilidad = 0
 
+# Componente invisible para recibir los frames automáticos desde JavaScript
+if "foto_automatica_base64" not in st.session_state:
+    st.session_state.foto_automatica_base64 = None
+
 def enviar_estado_sistema():
     payload = {
         "michi_detectado": st.session_state.ultimo_michi_visto,
@@ -66,7 +67,7 @@ def enviar_estado_sistema():
     try:
         client.publish(TOPIC_JSON_ST, json.dumps(payload), qos=1)
     except Exception as e:
-        print(f"Error al publicar en MQTT: {e}")
+        print(f"Error MQTT: {e}")
 
 # -------------------------------------------------------------------------
 # 3. MÓDULO DE PROCESAMIENTO DE IMÁGENES (TFLITE)
@@ -82,7 +83,6 @@ def procesar_y_clasificar(imagen_pil):
     normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1.0
     input_data = np.expand_dims(normalized_image_array, axis=0)
     
-    # Inferencia ligera con arreglos de punteros nativos de TFLite
     detalles_entrada = model.get_input_details()
     detalles_salida = model.get_output_details()
     
@@ -94,52 +94,105 @@ def procesar_y_clasificar(imagen_pil):
     return ETIQUETAS[indice_maximo], prediccion[0][indice_maximo]
 
 # -------------------------------------------------------------------------
-# 4. INTERFAZ GRÁFICA PRINCIPAL (UI / UX CON AUTOMACIÓN LOOP)
+# 4. INTERFAZ GRÁFICA PRINCIPAL (UI / UX)
 # -------------------------------------------------------------------------
 st.title("🐾 Panel del Comedero Inteligente")
-st.write("Monitoreo en tiempo real asistido por IA Ligera y control de voz adaptativo.")
+st.write("Monitoreo automático asistido por IA Ligera y control de voz adaptativo.")
 
-pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial", "🎙️ Control por Voz"])
+pestana_camara, pestana_voz = st.tabs(["📸 Visión Artificial Auto", "🎙️ Control por Voz"])
 
-# --- PESTAÑA A: CÁMARA CON BUCLE DE RERUN AUTOMÁTICO ---
+# --- PESTAÑA A: CÁMARA AUTOMÁTICA EN TIEMPO REAL (JS STREAMING) ---
 with pestana_camara:
-    st.header("Monitoreo del Comedero en Vivo")
+    st.header("Video del Comedero en Tiempo Real")
     
-    # Componente nativo del ecosistema de Streamlit
-    imagen_feed = st.camera_input("Enfoque la cámara hacia el plato del comedero")
+    # Marcador de posición dinámico para colocar el feed de video continuo
+    contenedor_video = st.empty()
     
-    if imagen_feed:
-        img_pil = Image.open(imagen_feed).convert("RGB")
-        resultado, confianza = procesar_y_clasificar(img_pil)
+    # INYECCIÓN DE COMPONENTE WEB JAVASCRIPT: Captura frames de la webcam en bucle y los envía a Python
+    js_camera_code = """
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
+        <video id="webcam" autoplay playsinline width="400" height="300" style="border-radius: 10px; background-color: #222;"></video>
+        <canvas id="canvas_oculto" width="224" height="224" style="display:none;"></canvas>
+        <p style="color: #888; font-size: 13px; margin-top: 5px;">Transmisión activa autónoma 🟢</p>
+    </div>
+    
+    <script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas_oculto');
+        const ctx = canvas.getContext('2d');
         
-        st.write(f"Identificación actual de la IA: **{resultado}**")
-        st.progress(float(confianza), text=f"Nivel de confianza: {confianza * 100:.2f}%")
-        
-        michi_detectado_ahora = resultado if confianza > 0.75 else "Nadie"
-        
-        # Filtro de estabilización matemática contra parpadeos de cuadros
-        if michi_detectado_ahora == st.session_state.michi_candidato:
-            st.session_state.contador_estabilidad += 1
-        else:
-            st.session_state.michi_candidato = michi_detectado_ahora
-            st.session_state.contador_estabilidad = 0
+        // Acceder a la cámara del usuario de forma nativa en el navegador
+        navigator.mediaDevices.getUserMedia({ video: { width: 400, height: 300 } })
+            .then((stream) => {
+                video.srcObject = stream;
+            })
+            .catch((err) => {
+                console.error("Error al acceder a la webcam: ", err);
+            });
             
-        if st.session_state.contador_estabilidad >= 2:
-            if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
-                st.session_state.ultimo_michi_visto = michi_detectado_ahora
-                enviar_estado_sistema()
-        
-        if st.session_state.ultimo_michi_visto != "Nadie":
-            st.info(f"🚨 Servomotores accionados: Se abrió el compartimiento para **{st.session_state.ultimo_michi_visto}**.")
-        else:
-            st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
+        // Función en bucle que toma una foto fija del video cada 900ms y la manda a Streamlit
+        setInterval(() => {
+            if(video.videoWidth > 0) {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const dataURL = canvas.toDataURL('image/jpeg');
+                
+                // Truco de comunicación: Enviar el string Base64 a Streamlit mediante un input oculto
+                const streamLitInput = window.parent.document.querySelector('input[aria-label="transfer_frame_hub"]');
+                if (streamLitInput) {
+                    streamLitInput.value = dataURL;
+                    streamLitInput.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+            }
+        }, 900);
+    </script>
+    """
+    
+    # Pintamos el feed de la cámara web dinámico usando HTML/JS
+    st.components.v1.html(js_camera_code, height=350)
+    
+    # Input invisible en la interfaz que sirve como puente de comunicación (Recibe el Base64 desde JS)
+    captura_base64 = st.text_input("transfer_frame_hub", label_visibility="collapsed", key="hub_comunicacion")
+    
+    # Si JavaScript acaba de enviar un nuevo frame de video
+    if captura_base64 and captura_base64.startswith("data:image/jpeg;base64,"):
+        try:
+            # Decodificar los datos string a una imagen PIL legible por tu IA
+            datos_limpios = captura_base64.replace("data:image/jpeg;base64,", "")
+            bytes_imagen = base64.b64decode(datos_limpios)
+            img_pil = Image.open(io.BytesIO(bytes_audio := bytes_imagen)).convert("RGB")
             
-    # BUCLE SÍNCRONO PARA TIEMPO REAL CONTINUO
-    # Espera 1 segundo y relanza la lectura de la cámara de manera autónoma
-    time.sleep(1.0)
-    st.rerun()
+            # Ejecutar inferencia con TFLite
+            resultado, confianza = procesar_y_clasificar(img_pil)
+            
+            # Dibujar resultados dinámicos en el contenedor superior
+            with contenedor_video.container():
+                st.metric(label="IA Identificó a:", value=resultado, delta=f"Confianza: {confianza * 100:.1f}%")
+                st.progress(float(confianza))
+            
+            # Filtro de estabilización matemática contra parpadeos
+            michi_detectado_ahora = resultado if confianza > 0.75 else "Nadie"
+            
+            if michi_detectado_ahora == st.session_state.michi_candidato:
+                st.session_state.contador_estabilidad += 1
+            else:
+                st.session_state.michi_candidato = michi_detectado_ahora
+                st.session_state.contador_estabilidad = 0
+                
+            if st.session_state.contador_estabilidad >= 2:
+                if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
+                    st.session_state.ultimo_michi_visto = michi_detectado_ahora
+                    enviar_estado_sistema()
+            
+            # Alertas visuales abajo del todo
+            if st.session_state.ultimo_michi_visto != "Nadie":
+                st.info(f"🚨 Servomotores en Wokwi ordenados para abrir el plato de **{st.session_state.ultimo_michi_visto}**.")
+            else:
+                st.success("✨ Zona despejada. Todos los platos permanecen resguardados.")
+                
+        except Exception as e:
+            pass
 
-# --- PESTAÑA B: INTERFAZ DE CONTROL POR VOZ ---
+# --- PESTAÑA B: INTERFAZ DE CONTROL POR VOZ (SE MANTIENE IGUAL) ---
 with pestana_voz:
     st.header("Comandos de Voz del Sistema")
     st.write("Presiona el botón para grabar un comando de voz (Ej: *'abrir plato'*, *'cerrar comedero'*).")
