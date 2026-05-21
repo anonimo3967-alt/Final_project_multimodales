@@ -56,6 +56,7 @@ if "estado_motor_actual" not in st.session_state:
 
 # Función para enviar el estado global del sistema de forma segura
 def enviar_estado_sistema():
+    # Enviamos ambas variables juntas en un único paquete JSON
     payload = json.dumps({
         "Pantalla": st.session_state.ultimo_michi_visto,
         "Act1": st.session_state.estado_motor_actual
@@ -107,15 +108,7 @@ def pipeline_camara():
         if st.session_state.contador_estabilidad >= 2:
             if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
                 st.session_state.ultimo_michi_visto = michi_detectado_ahora
-                
-                # 🛠️ OPTIMIZACIÓN AQUÍ: La IA también controla el estado del motor de forma coherente
-                if michi_detectado_ahora == "Coco":
-                    st.session_state.estado_motor_actual = "GATO_A"
-                elif michi_detectado_ahora == "Canela":
-                    st.session_state.estado_motor_actual = "GATO_B"
-                else:
-                    st.session_state.estado_motor_actual = "NADIE"
-                    
+                # Al cambiar el gato, refrescamos el estado enviando el paquete único
                 enviar_estado_sistema()
         
         if st.session_state.ultimo_michi_visto != "Nadie":
@@ -156,27 +149,23 @@ if audio_grabado:
             
             if "coco" in comando_voz:
                 st.session_state.estado_motor_actual = "GATO_A"
-                # 🛠️ OPTIMIZACIÓN AQUÍ: Sincronizamos la pantalla para que Wokwi sepa que manda la voz
-                st.session_state.ultimo_michi_visto = "Coco" 
                 st.success("Comando aceptado: Abriendo el plato de Coco 🐱")
                 comando_valido = True
                 
             elif "canela" in comando_voz:
                 st.session_state.estado_motor_actual = "GATO_B"
-                # 🛠️ OPTIMIZACIÓN AQUÍ: Sincronizamos la pantalla para que Wokwi sepa que manda la voz
-                st.session_state.ultimo_michi_visto = "Canela"
                 st.success("Comando aceptado: Abriendo el plato de Canela 🐱")
                 comando_valido = True
                 
             elif "cerrar" in comando_voz or "quitar" in comando_voz or "nadie" in comando_voz:
                 st.session_state.estado_motor_actual = "NADIE"
-                st.session_state.ultimo_michi_visto = "Nadie"
-                st.error("Comando acatado: Cerrando todos los comederos")
+                st.error("Comando aceptado: Cerrando todos los comederos")
                 comando_valido = True
                 
             else:
                 st.warning("Comando no reconocido. Di claramente 'Coco', 'Canela' o 'Cerrar'.")
             
+            # Si el comando de voz modificó el estado, enviamos la actualización completa de inmediato
             if comando_valido:
                 enviar_estado_sistema()
                 st.toast("¡Comando enviado exitosamente a Wokwi!", icon="📡")
