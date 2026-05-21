@@ -56,7 +56,6 @@ if "estado_motor_actual" not in st.session_state:
 
 # Función para enviar el estado global del sistema de forma segura
 def enviar_estado_sistema():
-    # Enviamos ambas variables juntas en un único paquete JSON
     payload = json.dumps({
         "Pantalla": st.session_state.ultimo_michi_visto,
         "Act1": st.session_state.estado_motor_actual
@@ -83,10 +82,11 @@ def procesar_y_clasificar(imagen_pil):
     return ETIQUETAS[index], prediction[0][index]
 
 # -------------------------------------------------------------------------
-# 3. PIPELINE DE LA CÁMARA (MONITOREO PASIVO)
+# 3. PIPELINE DE LA CÁMARA (FRAGMENTO AISLADO 1)
 # -------------------------------------------------------------------------
 @st.fragment
 def pipeline_camara():
+    st.subheader("📸 Monitoreo Pasivo por IA")
     imagen_feed = camera_input_live(width=420, height=315, debounce=900)
     
     if imagen_feed:
@@ -108,7 +108,6 @@ def pipeline_camara():
         if st.session_state.contador_estabilidad >= 2:
             if michi_detectado_ahora != st.session_state.ultimo_michi_visto:
                 st.session_state.ultimo_michi_visto = michi_detectado_ahora
-                # Al cambiar el gato, refrescamos el estado enviando el paquete único
                 enviar_estado_sistema()
         
         if st.session_state.ultimo_michi_visto != "Nadie":
@@ -116,61 +115,66 @@ def pipeline_camara():
         else:
             st.success("✨ Zona del comedero despejada.")
 
+# -------------------------------------------------------------------------
+# 4. RECONOCIMIENTO DE COMANDOS DE VOZ (FRAGMENTO AISLADO 2)
+# -------------------------------------------------------------------------
+@st.fragment
+def pipeline_voz():
+    st.subheader("🎙️ Control por Comando de Voz")
+    st.write("Di comandos como: *'abrir coco'*, *'abre el plato de canela'* o *'cerrar comederos'*.")
+
+    audio_grabado = mic_recorder(
+        start_prompt="Presiona para Hablar 🎤",
+        stop_prompt="Detener Grabación 🟥",
+        just_once=True,
+        format="wav", 
+        key="grabador_voz"
+    )
+
+    if audio_grabado:
+        audio_bytes = audio_grabado['bytes']
+        recognizer = sr.Recognizer()
+        
+        try:
+            with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
+                audio_data = recognizer.record(source)
+                texto_detectado = recognizer.recognize_google(audio_data, language="es-ES")
+                
+                st.write(f"Transcripción: *\"{texto_detectado}\"*")
+                comando_voz = texto_detectado.lower()
+                
+                comando_valido = False
+                
+                if "coco" in comando_voz:
+                    st.session_state.estado_motor_actual = "GATO_A"
+                    st.success("Comando aceptado: Abriendo el plato de Coco 🐱")
+                    comando_valido = True
+                    
+                elif "canela" in comando_voz:
+                    st.session_state.estado_motor_actual = "GATO_B"
+                    st.success("Comando aceptado: Abriendo el plato de Canela 🐱")
+                    comando_valido = True
+                    
+                elif "cerrar" in comando_voz or "quitar" in comando_voz or "nadie" in comando_voz:
+                    st.session_state.estado_motor_actual = "NADIE"
+                    st.error("Comando aceptado: Cerrando todos los comederos")
+                    comando_valido = True
+                    
+                else:
+                    st.warning("Comando no reconocido. Di claramente 'Coco', 'Canela' o 'Cerrar'.")
+                
+                if comando_valido:
+                    enviar_estado_sistema()
+                    st.toast("¡Comando enviado exitosamente a Wokwi!", icon="📡")
+                    
+        except sr.UnknownValueError:
+            st.error("El motor de voz no pudo entender el audio.")
+        except sr.RequestError as e:
+            st.error(f"Error con el servicio de voz: {e}")
+
+# -------------------------------------------------------------------------
+# EJECUCIÓN SÍNCRONA DE LOS COMPONENTES
+# -------------------------------------------------------------------------
 pipeline_camara()
-
-# -------------------------------------------------------------------------
-# 4. RECONOCIMIENTO DE COMANDOS DE VOZ (CONTROL DE MOTORES)
-# -------------------------------------------------------------------------
 st.markdown("---")
-st.subheader("🎙️ Control por Comando de Voz")
-st.write("Di comandos como: *'abrir coco'*, *'abre el plato de canela'* o *'cerrar comederos'*.")
-
-audio_grabado = mic_recorder(
-    start_prompt="Presiona para Hablar 🎤",
-    stop_prompt="Detener Grabación 🟥",
-    just_once=True,
-    format="wav", 
-    key="grabador_voz"
-)
-
-if audio_grabado:
-    audio_bytes = audio_grabado['bytes']
-    recognizer = sr.Recognizer()
-    
-    try:
-        with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
-            audio_data = recognizer.record(source)
-            texto_detectado = recognizer.recognize_google(audio_data, language="es-ES")
-            
-            st.write(f"Transcripción: *\"{texto_detectado}\"*")
-            comando_voz = texto_detectado.lower()
-            
-            comando_valido = False
-            
-            if "coco" in comando_voz:
-                st.session_state.estado_motor_actual = "GATO_A"
-                st.success("Comando aceptado: Abriendo el plato de Coco 🐱")
-                comando_valido = True
-                
-            elif "canela" in comando_voz:
-                st.session_state.estado_motor_actual = "GATO_B"
-                st.success("Comando aceptado: Abriendo el plato de Canela 🐱")
-                comando_valido = True
-                
-            elif "cerrar" in comando_voz or "quitar" in comando_voz or "nadie" in comando_voz:
-                st.session_state.estado_motor_actual = "NADIE"
-                st.error("Comando aceptado: Cerrando todos los comederos")
-                comando_valido = True
-                
-            else:
-                st.warning("Comando no reconocido. Di claramente 'Coco', 'Canela' o 'Cerrar'.")
-            
-            # Si el comando de voz modificó el estado, enviamos la actualización completa de inmediato
-            if comando_valido:
-                enviar_estado_sistema()
-                st.toast("¡Comando enviado exitosamente a Wokwi!", icon="📡")
-                
-    except sr.UnknownValueError:
-        st.error("El motor de voz no pudo entender el audio.")
-    except sr.RequestError as e:
-        st.error(f"Error con el servicio de voz: {e}")
+pipeline_voz()
